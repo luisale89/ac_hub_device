@@ -1,5 +1,3 @@
 {
-  "value": false,
-  "on_condition": "presence",
-  "off_condition": "presence"
+  "sleep_control_enabled": false
 }

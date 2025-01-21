@@ -1,4 +1,7 @@
 {
-  "ON": "0730",
-  "OFF": "2130"
+  "wake_at": 700,
+  "sleep_at": 1800,
+  "enabled": true,
+  "wake_condition": 0,
+  "sleep_condition": 2
 }

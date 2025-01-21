@@ -50,14 +50,14 @@ unsigned long lastRadarChange = 0;
 unsigned long radarStateTime = 0;
 unsigned long AutoTimeOut = 0;                           // wait time for moving sensor and setpoint change
 unsigned long mqttPostingInterval = 1L * 60000L;   // delay between updates, in milliseconds.. 1 minute and updates later on.
-const unsigned long radarDebounceTime = 1L * 15000L;     // 15 seconds rebound for radar sensor.
+const unsigned long radarDebounceTime = 1L * 30000L;     // 30 seconds rebound for radar sensor.
 const unsigned long buttonTimeOut = 3L * 1000L;          // button pressed for 3seconds
 const unsigned long controllerInterval = 1L * 5000L;     // delay between sensor updates, 5 seconds
 const unsigned long SaluteTimer = 1L * 30000L;           // Tiempo para enviar que el dispositivo esta conectado,
 const unsigned long wifiReconnectInterval = 5L * 60000L;  // 5 minutos para intentar reconectar al wifi.
 const unsigned long mqttReconnectInterval = 1L * 10000L; // 10 segundos para intentar reconectar al broker mqtt.
 const unsigned long wifiDisconnectedLedInterval = 250;        // 250 ms
-const unsigned long espnowPostingInterval = 10000L; // 10 seconds for espnow message post.
+const unsigned long espnowPostingInterval = 10000L; // 5 seconds for espnow message post.
 
 // MQTT
 const char *mqtt_broker = MQTT_BROKER;
@@ -96,6 +96,7 @@ bool wiFiReconnectFlag = false;
 // RTC
 RTC_DS3231 DS3231_RTC;
 char Week_days[7][12] = {"Domingo", "Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado"};
+String last_ntp_update = "";
 
 // Variables de configuracion
 // Enum classes
@@ -111,9 +112,6 @@ SysStateEnum SysStateBuffer = UNKN;
 SysModeEnum SysMode = AUTO_MODE;
 SysModeEnum peersMode = FAN_MODE;
 FlowFlag sleep_flag = FLAG_UNSET;
-SleepWakeCondition sleep_condition = SLEEP_ON_TIME;
-SleepWakeCondition wake_condition = WAKE_ON_TIME;
-
 // Variables
 int tempSensorResolution = 12; //bits
 int tempRequestDelay = 0;
@@ -131,6 +129,7 @@ int led_fade_amount = 5;
 bool led_state = false;
 bool cooling_relay_state = false;
 bool fan_relay_state = false;
+bool monitor_comp_state = false;
 
 
 // NTP
@@ -150,7 +149,10 @@ const uint16_t MAX_NOT_RSPND_TO_OFFLINE = 10; // 10 messages not received.
 enum MessageTypeEnum {PAIRING, DATA,};
 enum PeerRoleID {SERVER, CONTROLLER, MONITOR, UNSET};
 enum EspNowState {ESPNOW_OFFLINE, ESPNOW_ONLINE, ESPNOW_IDLE,};
+enum AlarmCode {NORMAL, LOW_P, HIGH_P, AMP_LIMIT, FROM_APP};
+
 EspNowState espnow_connection_state = ESPNOW_IDLE;
+AlarmCode monitor_alrm_stt = NORMAL;
 
 typedef struct pairing_data_struct {
   MessageTypeEnum msg_type;     // (1 byte)
@@ -169,23 +171,27 @@ typedef struct controller_data_struct {
   bool cooling_relay;      // (1 byte)
   bool fan_relay;          // (1 byte)
   unsigned int seconds_since_last_cooling_rq;  // (4 bytes) seconds since last false->true relay change.
-  unsigned int total_cooling_rq_hours; // (4 bytes) total cooling request seconds. state in controller device.
+  unsigned int total_system_hours; // (4 bytes) total system running hours. state lives in the controller device.
 } controller_data_struct;  // TOTAL = 18 bytes
 
 typedef struct monitor_data_struct {
   MessageTypeEnum msg_type;     // (1 byte)
   PeerRoleID sender_role;       // (1 byte)
-  uint8_t fault_code;           // (1 byte) 0-no_fault; 1..255 monitor_fault_codes.
-  float vapor_temp;             // (4 bytes) vapor line temperature readings [°C]
-  float low_pressure;           // (4 bytes) low pressure readings [psi]
+  uint8_t fault_code;           // (1 byte) 0=no_fault; 1..255 monitor_fault_codes.
+  float ambient_temp;           // (4 bytes) ambient temperature readings [°C]
   float discharge_temp;         // (4 bytes) discharge temperature readings [°C]
   float liquid_temp;            // (4 bytes) liquid line temperature readings [°C]
-  float high_pressure;          // (4 bytes) liquid line pressure [psi]
-  float compressor_amps;        // (4 bytes) compressor_current readings [A]
-  bool compressor_state;        // (1 byte)
-  bool board_relay;             // (1 byte) state of the board relay.
-  unsigned int running_seconds; // (4 bytes) seconds. total seconds of the compressor_state being true
-} monitor_data_struct;          // TOTAL = 32 bytes
+  float vapor_temp;             // (4 bytes) vapor line temperature readings [°C]
+  float low_pressure;           // (4 bytes) low pressure readings [volts, 0-5V]
+  float high_pressure;          // (4 bytes) liquid line pressure [volts, 0-5V]
+  float ac_mains_voltage;       // (4 bytes) ac mains voltage readinsg [volts, 90 - 260V]
+  float compressor_current;     // (4 bytes) compressor_current readings [volts, 0-1V]
+  bool compressor_state;        // (1 byte) compressor on|off state.
+  AlarmCode alarm_code;         // (1 byte) alarm_code_state... enum value
+  unsigned int seconds_since_last_cooling_rq;  // (4 bytes) seconds since last false->true compressor state change.
+  unsigned int total_cooling_hours;            // (4 bytes) total cooling request hours. state in monitor device.
+
+} monitor_data_struct;          // TOTAL = 46 bytes
 
 typedef struct outgoing_settings_struct {
   MessageTypeEnum msg_type;     // (1 byte)
@@ -194,8 +200,9 @@ typedef struct outgoing_settings_struct {
   SysStateEnum system_state;    // (1 byte)
   float system_temp_sp;         // (4 bytes) [°C]
   float room_temp;              // (4 bytes) [°C]
-  bool monitor_board_relay;     // (1 byte) > control over the alarm relay of the monitor.
-} outgoing_settings_struct;     // TOTAL = 12 bytes
+  bool monitor_remote_alarm;    // (1 byte) > control over the alarm relay of the monitor.
+  bool monitor_alarm_rstrt;     // (1 byte) > restart all alarms from the broker.
+} outgoing_settings_struct;     // TOTAL = 13 bytes
 
 outgoing_settings_struct settings_data;
 pairing_data_struct pairing_data;
@@ -256,11 +263,11 @@ void network_led_animation(LedAnimationStyle animation_style) {
         led_state = false;
       }
     }
-    analogWrite(NETWORK_LED, led_state);
+    digitalWrite(NETWORK_LED, led_state);
     break;
   
   default:
-    analogWrite(NETWORK_LED, 0);
+    digitalWrite(NETWORK_LED, 0);
     break;
   }
 }
@@ -339,9 +346,11 @@ void parse_mac_address(const char* str, char sep, byte* bytes, int maxBytes, int
 void update_peer_list_in_fs(String received_data) {
 
   info_logger("updating peer info in the filesystem.");
-  JsonDocument json;
+  JsonDocument updated_json;
+  JsonDocument received_json;
   String output_data;
-  DeserializationError error = deserializeJson(json, received_data);
+
+  DeserializationError error = deserializeJson(received_json, received_data);
 
   if (error)
   {
@@ -349,8 +358,8 @@ void update_peer_list_in_fs(String received_data) {
     return;
   } 
   //get data
-  const char *controller_address = json["controller"] | "null";  //FF.FF.FF.FF.FF.FF
-  const char *monitor_address = json["monitor"] | "null";
+  const char *controller_address = received_json["controller"] | "null";  //FF.FF.FF.FF.FF.FF
+  const char *monitor_address = received_json["monitor"] | "null";        //
   uint8_t buffer[6];
 
   if (strcmp(controller_address, "null") != 0) //don't match
@@ -358,7 +367,7 @@ void update_peer_list_in_fs(String received_data) {
     info_logger("new serial for controller received!");
     debug_logger(controller_address);
     parse_mac_address(controller_address, '.', buffer, 6, 16);
-    json["controller"] = print_device_mac(buffer);
+    updated_json["controller"] = print_device_mac(buffer);
   }
 
   if (strcmp(monitor_address, "null") != 0) //don't match
@@ -366,11 +375,11 @@ void update_peer_list_in_fs(String received_data) {
     info_logger("new serial for MONITOR received!");
     debug_logger(monitor_address);
     parse_mac_address(monitor_address, '.', buffer, 6, 16);
-    json["monitor"] = print_device_mac(buffer);
+    updated_json["monitor"] = print_device_mac(buffer);
   }
 
   //save data.
-  serializeJson(json, output_data);
+  serializeJson(updated_json, output_data);
   save_data_in_fs(output_data, "/Peer.txt");
 
   return;
@@ -669,6 +678,7 @@ void load_operation_state_from_fs() //[OK] [OK]
 void update_rtc_from_ntp() // [OK] [OK]
 {
   struct tm timeinfo;
+
   if (getLocalTime(&timeinfo))
   {
     int dia = timeinfo.tm_mday;
@@ -680,7 +690,16 @@ void update_rtc_from_ntp() // [OK] [OK]
 
     DS3231_RTC.adjust(DateTime(ano, mes, dia, hora, minuto, segundo));
     info_logger("[RTC] DateTime updated!");
-    ESP_LOG_LEVEL(ESP_LOG_DEBUG, TAG, "[RTC] Day: %s - %s:%s", String(dia).c_str(), String(hora).c_str(), String(minuto).c_str());
+    last_ntp_update = "";
+
+    last_ntp_update += hora;
+    last_ntp_update += ":";
+    last_ntp_update += minuto;
+    last_ntp_update += ":";
+    last_ntp_update += segundo;
+
+    ESP_LOG_LEVEL(ESP_LOG_DEBUG, TAG, "[RTC] Day: %s", last_ntp_update);
+
   }
   else
   {
@@ -696,15 +715,14 @@ void timeavailable(struct timeval *tml) // [OK] [OK]
   update_rtc_from_ntp(); // update RTC with latest time from NTP server.
 }
 
-// Save timectrl settings in filesystem.
-void save_timectrl_settings_in_fs() //[OK]
+// Save settings in filesystem.
+void save_settings_in_fs() //[OK]
 {
+  // read global variables that controls the settings and store them in the fs.
   String timectrl_setting;
   JsonDocument doc;
 
-  doc["value"] = globalSleepControl;
-  if (wake_condition == WAKE_ON_TIME) {doc["on_condition"] = "on_time";} else {doc["on_condition"] = "presence";}
-  if (sleep_condition == SLEEP_ON_TIME) {doc["off_condition"] = "on_time";} else {doc["off_condition"] = "presence";}
+  doc["sleep_control_enabled"] = globalSleepControl;
 
   serializeJson(doc, timectrl_setting);
   save_data_in_fs(timectrl_setting, "/Settings.txt");
@@ -712,7 +730,7 @@ void save_timectrl_settings_in_fs() //[OK]
 }
 
 // load timectrl settings from filesystem.
-void load_timectrl_settings_from_fs() //[OK]
+void load_settings_from_fs() //[OK]
 {
   String Settings = load_data_from_fs("/Settings.txt");
   // String input;
@@ -725,32 +743,28 @@ void load_timectrl_settings_from_fs() //[OK]
     return;
   }
 
-  globalSleepControl = jsonSettings["value"];
-  if (strcmp(jsonSettings["on_condition"], "on_time") == 0) {
-    wake_condition = WAKE_ON_TIME;} else {wake_condition = WAKE_ON_PRESENCE;
-  }
-  if (strcmp(jsonSettings["off_condition"], "on_time") == 0) {
-    sleep_condition = SLEEP_ON_TIME;} else {sleep_condition = SLEEP_ON_ABSENCE;
-  }
+  globalSleepControl = jsonSettings["sleep_control_enabled"];
 
   return;
 }
 
 // Guarda el horario de apgado de cada dia
-void save_schedule_in_fs(int HON, int HOFF, String Day, bool enable) //[OK]
-{
-  String Hours;
-  String target_file = "/" + Day + ".txt";
-  JsonDocument doc;
+// void save_schedule_in_fs(int HON, int HOFF, String Day, bool enable, int wake_cond, int sleep_cond) //[OK]
+// {
+//   String Hours;
+//   String target_file = "/" + Day + ".txt";
+//   JsonDocument doc;
 
-  doc["ON"] = HON;
-  doc["OFF"] = HOFF;
-  doc["enable"] = enable;
+//   doc["ON"] = HON;
+//   doc["OFF"] = HOFF;
+//   doc["enable"] = enable;
+//   doc["wake_condition"] = wake_cond;
+//   doc["sleep_condition"] = sleep_cond;
 
-  serializeJson(doc, Hours);
-  save_data_in_fs(Hours, target_file.c_str());
-  return;
-}
+//   serializeJson(doc, Hours);
+//   save_data_in_fs(Hours, target_file.c_str());
+//   return;
+// }
 
 // Aqui se guardan la configuracion del modo Auto que llega en el topico
 void save_auto_config_in_fs(int wait, int temp)
@@ -899,8 +913,8 @@ void save_wifi_data_in_fs()
 // Guarda la configuracion que se envia en el topico
 void process_settings_from_broker(String json) //[OK]
 {
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, json);
+  JsonDocument data_received;
+  DeserializationError error = deserializeJson(data_received, json);
 
   if (error)
   {
@@ -908,36 +922,64 @@ void process_settings_from_broker(String json) //[OK]
     return;
   }
 
-  const char *variable = doc["variable"] | "null";
+  const char *variable = data_received["variable"] | "null";
 
   if (strcmp(variable, "timectrl") == 0)
   {
     info_logger("timectrl settings adjustment.");
     // Aqui hay que guardar la configuracion del control de apagado encendido
     // Cambia el horario de encendido o apagado
-    globalSleepControl = doc["enabled"] | true;
-    const char *on_condition = doc["on_condition"] | "on_time";
-    const char *off_condition = doc["off_condition"] | "on_time";
+    globalSleepControl = data_received["enabled"] | false;
+    save_settings_in_fs();
 
+    SleepWakeCondition wake_condition = WAKE_ON_TIME; // default values
+    SleepWakeCondition sleep_condition = SLEEP_ON_TIME;
+    const char *on_condition = data_received["on_condition"] | "on_time";
+    const char *off_condition = data_received["off_condition"] | "on_time";
+    
     if (strcmp(on_condition, "on_time") == 0) {
       wake_condition = WAKE_ON_TIME;} else {wake_condition = WAKE_ON_PRESENCE;
     }
     if (strcmp(off_condition, "on_time") == 0) {
       sleep_condition = SLEEP_ON_TIME;} else {sleep_condition = SLEEP_ON_ABSENCE;
     }
-    save_timectrl_settings_in_fs();
 
-    for (JsonPair schedule_item : doc["schedule"].as<JsonObject>())
+    for (JsonPair schedule_item : data_received["schedule"].as<JsonObject>())
     {
+      //get day to be configured...
       const char *schedule_item_key = schedule_item.key().c_str(); // "1", "2", "3", "4", "5", "6", "7"
       int intDay = atoi(schedule_item_key);
-      String Day = Week_days[intDay - 1];
+      String target_file = "/" + String(Week_days[intDay - 1]) + ".txt";
+      String document;
+      JsonDocument daily_schedule;
 
-      int schedule_item_value_on = schedule_item.value()["on"];
-      int schedule_item_value_off = schedule_item.value()["off"];
-      bool schedule_item_value_enabled = schedule_item.value()["enabled"]; // boolean value
-      // String input;, false, true, true, true, ...
-      save_schedule_in_fs(schedule_item_value_on, schedule_item_value_off, Day, schedule_item_value_enabled);
+      int wake_time = schedule_item.value()["wake_at"] | 859;
+      int sleep_time = schedule_item.value()["sleep_at"] | 1759;
+      bool sch_enabled = schedule_item.value()["enabled"] | false; // boolean value
+
+      // validations...
+
+      if (wake_time >= 2400 || wake_time < 0) {
+        error_logger("invalid 'wake_time' value received.. out of range");
+        return;
+      }
+
+      if (sleep_time >= 2400 || wake_time < 0) {
+        error_logger("invalid 'sleep_time' value received.. out of range.");
+      }
+
+      // output
+      daily_schedule["wake_at"] = wake_time;
+      daily_schedule["sleep_at"] = sleep_time;
+      daily_schedule["enabled"] = sch_enabled;
+      daily_schedule["wake_condition"] = wake_condition;
+      daily_schedule["sleep_condition"] = sleep_condition;
+
+      // serialize document.
+      serializeJson(daily_schedule, document);
+
+      // save data in fs.
+      save_data_in_fs(document, target_file.c_str());
     }
   }
 
@@ -945,9 +987,9 @@ void process_settings_from_broker(String json) //[OK]
   {
     info_logger("auto mode configuration settings.");
     // Cambia la configuracion del modo
-    const char *value = doc["value"]; // "auto"
-    const int wait = doc["wait"] | 0;           // 1234
-    const int temp = doc["temp"] | 0;           // 24
+    const char *value = data_received["value"];           // "auto"
+    const int wait = data_received["wait"] | 0;           // 1234
+    const int temp = data_received["temp"] | 0;           // 24
 
     if (strcmp(value, "auto") != 0) {
       error_logger("invalid value in json, expected: 'auto'");
@@ -971,7 +1013,7 @@ void process_settings_from_broker(String json) //[OK]
   {
     info_logger("system operation mode settings");
     // Cambia el modo de operacion
-    const char *value = doc["value"]; // "cool"
+    const char *value = data_received["value"]; // "cool"
 
     if (strcmp(value, "cool") == 0) {SysMode = COOL_MODE;}
     else if (strcmp(value, "fan") == 0) {SysMode = FAN_MODE;}
@@ -1092,10 +1134,6 @@ void mqtt_message_callback(char *message_topic, byte *payload, unsigned int leng
     error_logger("mqtt topic not implemented.");
   }
 
-
-  // Levanta el Flag para envio de datos
-  
-  // Levanta el Flag para envio de datos
   delay(100);
 }
 
@@ -1104,7 +1142,7 @@ void sleep_state_controller() //[OK]
 {
   if (!globalSleepControl)
   {
-    info_logger("- Time Control (timectrl) disabled.");
+    info_logger("- Time Control (timectrl) disabled by settings");
     sleep_flag = FLAG_UNSET;
     daySleepControl = false;
     return;
@@ -1115,8 +1153,8 @@ void sleep_state_controller() //[OK]
   String target_file = "/" + Day + ".txt";
   JsonDocument doc;
 
-  String AutoOff = load_data_from_fs(target_file.c_str());
-  DeserializationError error = deserializeJson(doc, AutoOff);
+  String day_schedule = load_data_from_fs(target_file.c_str());
+  DeserializationError error = deserializeJson(doc, day_schedule);
 
   if (error)
   {
@@ -1126,9 +1164,11 @@ void sleep_state_controller() //[OK]
     return;
   }
 
-  const int WAKE_TIME = doc["ON"];   // "0730"
-  const int SLEEP_TIME = doc["OFF"]; // "2130"
-  daySleepControl = doc["enable"] | false;
+  const int WAKE_TIME = doc["wake_at"] | 759;   // 730
+  const int SLEEP_TIME = doc["sleep_at"] | 1559; // 2130
+  const SleepWakeCondition WAKE_CONDITION = doc["wake_condition"] | WAKE_ON_TIME;
+  const SleepWakeCondition SLEEP_CONDITION = doc["sleep_condition"] | SLEEP_ON_ABSENCE;
+  daySleepControl = doc["enabled"] | false;
   
   if (!daySleepControl)
   {
@@ -1151,12 +1191,12 @@ void sleep_state_controller() //[OK]
   String tiempo = hora + minuto;
   ESP_LOG_LEVEL(ESP_LOG_DEBUG, TAG, "Current Time: %s", tiempo);
 
-  if (SLEEP_TIME > tiempo.toInt() && WAKE_TIME < tiempo.toInt()) // horario para el sleep...
+  if (SLEEP_TIME > tiempo.toInt() && WAKE_TIME < tiempo.toInt()) // horario de encendido...
   {
     // Si el sleep está activado, o si es la primera verificación después del arranque..
     if (sleep_flag == FLAG_UP || sleep_flag == FLAG_UNSET)
     {
-      switch (wake_condition)
+      switch (WAKE_CONDITION)
       {
       case WAKE_ON_PRESENCE:
         if (radarState) {
@@ -1177,7 +1217,7 @@ void sleep_state_controller() //[OK]
     // si el sleep está apagado, o si es la primera verificación después del arranque..
     if (sleep_flag == FLAG_DOWN || sleep_flag == FLAG_UNSET)
     {
-      switch (sleep_condition)
+      switch (SLEEP_CONDITION)
       {
       case SLEEP_ON_ABSENCE:
         if(!radarState){
@@ -1256,13 +1296,20 @@ void post_vairables_to_broker() //[ok]
   doc["variable"] = "ac_hub";
   doc["value"] = SysState;
   doc["metadata"]["did"] = hub_device_serial;
-  doc["metadata"]["RSSI"] = WiFi.RSSI();
+  //-- WiFi data.
+  doc["metadata"]["WiFi"][0] = WiFi.SSID();
+  doc["metadata"]["WiFi"][1] = WiFi.RSSI();
+  doc["metadata"]["WiFi"][2] = WiFi.channel();
+  doc["metadata"]["WiFi"][3] = WiFi.localIP().toString();
+  doc["metadata"]["WiFi"][4] = last_ntp_update;
+  //-- sensors data.
   doc["metadata"]["room_t"] = ambient_temp;
   doc["metadata"]["sys_mode"] = SysMode;
   doc["metadata"]["presence"] = radarState;
   doc["metadata"]["timectrl"] = daySleepControl;
   doc["metadata"]["user_sp"] = userSetpoint;
   doc["metadata"]["active_sp"] = activeSetpoint;
+  //-- espnow peers data.
   doc["metadata"]["controller"][0] = controller_online;
   doc["metadata"]["monitor"][0] = monitor_online;
 
@@ -1273,37 +1320,42 @@ void post_vairables_to_broker() //[ok]
     doc["metadata"]["controller"][4] = controller_data.fan_relay;
     doc["metadata"]["controller"][5] = controller_data.drain_switch;
     doc["metadata"]["controller"][6] = controller_data.seconds_since_last_cooling_rq;
-    doc["metadata"]["controller"][7] = controller_data.total_cooling_rq_hours;
+    doc["metadata"]["controller"][7] = controller_data.total_system_hours;
   }
 
   if (monitor_online) {
-    doc["metadata"]["monitor"][1] = monitor_data.compressor_amps;
-    doc["metadata"]["monitor"][2] = monitor_data.compressor_state;
-    doc["metadata"]["monitor"][3] = monitor_data.discharge_temp;
-    doc["metadata"]["monitor"][4] = monitor_data.high_pressure;
-    doc["metadata"]["monitor"][5] = monitor_data.liquid_temp;
-    doc["metadata"]["monitor"][6] = monitor_data.low_pressure;
-    doc["metadata"]["monitor"][7] = monitor_data.vapor_temp;
-    doc["metadata"]["monitor"][8] = monitor_data.running_seconds;
-    doc["metadata"]["monitor"][9] = monitor_data.board_relay;
+    doc["metadata"]["monitor"][1] = monitor_data.ambient_temp;
+    doc["metadata"]["monitor"][2] = monitor_data.discharge_temp;
+    doc["metadata"]["monitor"][3] = monitor_data.liquid_temp;
+    doc["metadata"]["monitor"][4] = monitor_data.vapor_temp;
+    doc["metadata"]["monitor"][5] = monitor_data.low_pressure;
+    doc["metadata"]["monitor"][6] = monitor_data.high_pressure;
+    doc["metadata"]["monitor"][7] = monitor_data.ac_mains_voltage;
+    doc["metadata"]["monitor"][8] = monitor_data.compressor_current;
+    doc["metadata"]["monitor"][9] = monitor_data.compressor_state;
+    doc["metadata"]["monitor"][10] = monitor_data.alarm_code;
+    doc["metadata"]["monitor"][11] = monitor_data.seconds_since_last_cooling_rq;
+    doc["metadata"]["monitor"][12] = monitor_data.total_cooling_hours;
   }
-
 
   serializeJson(doc, output);
   info_logger("Publishing hub variables.");
   bool mqtt_msg_sent = mqtt_client.publish(post_data_topic.c_str(), output.c_str());
   ESP_LOG_LEVEL(ESP_LOG_INFO, TAG, "MQTT publish result: %s", mqtt_msg_sent ? "message sent!" : "fail");
 
+  bool short_post_interval = false;
+  if (controller_online) {
+    short_post_interval |= controller_data.cooling_relay || controller_data.fan_relay;
+  }
+  if (monitor_online) {
+    short_post_interval |= monitor_data.compressor_state;
+  }
+
   //- set posting interval based on the system state value.
-  switch (SysState)
-  {
-  case SYSTEM_ON:
-    mqttPostingInterval = 1L * 60000L; // 1 minuto.
-    break;
-  
-  default:
-    mqttPostingInterval = 2L * 60000L; // 2 minutos.
-    break;
+  if (short_post_interval) {
+    mqttPostingInterval = 1L * 60000L; // 1 minuto
+  } else {
+    mqttPostingInterval = 3L * 60000L; // 3 minutos si ninguna condición se cumple.
   }
 
   postVariablesToBroker = false;
@@ -1538,7 +1590,8 @@ void send_data_to_peers()
   settings_data.system_state = SysState;
   settings_data.system_temp_sp = activeSetpoint;
   settings_data.room_temp = ambient_temp;
-  settings_data.monitor_board_relay = false;
+  settings_data.monitor_remote_alarm = false; //:TODO -> implement endpoint to update this value.
+  settings_data.monitor_alarm_rstrt = false; //:TODO -> implement endpoint to update this value.
 
   // send data to peers.
   esp_err_t result = esp_now_send(NULL, (uint8_t *) &settings_data, sizeof(settings_data));
@@ -1623,6 +1676,19 @@ void check_for_updates() {
     }
   }
 
+  if (monitor_online) {
+    // alarm stt change.
+    if (monitor_alrm_stt != monitor_data.alarm_code) {
+      monitor_alrm_stt = monitor_data.alarm_code;
+      postVariablesToBroker = true;
+    }
+
+    if (monitor_comp_state != monitor_data.compressor_state) {
+      monitor_comp_state = monitor_data.compressor_state;
+      postVariablesToBroker = true;
+    }
+  }
+ 
   return;
 }
 
@@ -1714,7 +1780,7 @@ void setup()
   load_temp_setpoint_from_fs();     // user-temp and auto-temp
   load_operation_state_from_fs();   // on-off setting
   load_operation_mode_from_fs();    // function mode (cool, auto, fan)
-  load_timectrl_settings_from_fs(); // timectrl settings
+  load_settings_from_fs(); // timectrl settings
   load_wifi_data_from_fs();         // load wifi data from filesystem
   info_logger("SPIFF system ok.");
   // --- continue
