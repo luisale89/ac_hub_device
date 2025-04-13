@@ -56,8 +56,7 @@ const unsigned long controllerInterval = 1L * 5000L;     // delay between sensor
 const unsigned long SaluteTimer = 1L * 30000L;           // Tiempo para enviar que el dispositivo esta conectado,
 const unsigned long wifiReconnectInterval = 5L * 60000L;  // 5 minutos para intentar reconectar al wifi.
 const unsigned long mqttReconnectInterval = 1L * 10000L; // 10 segundos para intentar reconectar al broker mqtt.
-const unsigned long wifiDisconnectedLedInterval = 250;        // 250 ms
-const unsigned long espnowPostingInterval = 10000L; // 5 seconds for espnow message post.
+const unsigned long espnowPostingInterval = 5000L; // 5 seconds for espnow message post.
 
 // MQTT
 const char *mqtt_broker = MQTT_BROKER;
@@ -68,6 +67,7 @@ String opstate_topic = "";
 String opsetpoint_topic = "";
 String peer_list_topic = "";
 String lwill_topic = "";
+String alarm_set_topic = "";
 const char *mqtt_username = "achub";
 const char *mqtt_password = MQTT_PASSWORD;
 const int mqtt_port = 8883;
@@ -204,12 +204,14 @@ typedef struct outgoing_settings_struct {
   bool monitor_alarm_rstrt;     // (1 byte) > restart all alarms from the broker.
 } outgoing_settings_struct;     // TOTAL = 13 bytes
 
-outgoing_settings_struct settings_data;
 pairing_data_struct pairing_data;
-controller_data_struct controller_data = { //initial data
-  DATA, UNSET, 0x00, 24, 24, true, false, false, 0, 0
-};
 monitor_data_struct monitor_data;
+outgoing_settings_struct settings_data = { //initial data
+  DATA, SERVER, FAN_MODE, UNKN, 24, 24, false, false
+};
+controller_data_struct controller_data = { //initial data
+  DATA, CONTROLLER, 0x00, 24, 24, true, false, false, 0, 0
+};
 
 //logger functions
 
@@ -1044,13 +1046,29 @@ void process_op_state_from_broker(String json) //[OK, OK]
   const char *variable = doc["variable"] | "unkonw"; // "system_state"
   const char *value = doc["value"] | "invalid";
 
-  if (strcmp(variable, "system_state") != 0) {
-    error_logger("Error: Invalid variable name, 'system_state' expected.");
+  if (strcmp(variable, "system_state") == 0) {
+    info_logger("system_state variable received");
+    if (strcmp(value,"on") == 0) {SysState = SYSTEM_ON;}
+    else if (strcmp(value, "off") == 0) {SysState = SYSTEM_OFF;}
+    else {error_logger("Error: invalid value received from broker on -system_state-");}
+    return;
+  }
+
+  if (strcmp(variable, "alarm_state") == 0) {
+    info_logger("alarm_state variable received");
+    // set settings variable to be sent to the monitor device
+    settings_data.monitor_remote_alarm = true;
+    return;
   }
   
-  if (strcmp(value,"on") == 0) {SysState = SYSTEM_ON;}
-  else if (strcmp(value, "off") == 0) {SysState = SYSTEM_OFF;}
-  else {error_logger("Error: invalid value received from broker on -system_state-");}
+  if (strcmp(variable, "alarm_restart") == 0) {
+    info_logger("alarm_restart variable received");
+    //set settings variable to be sent to the monitor device
+    settings_data.monitor_alarm_rstrt = true;
+    return;
+  }
+
+  error_logger("invalid variable received in json payload..");
   return;
 }
 
@@ -1590,8 +1608,6 @@ void send_data_to_peers()
   settings_data.system_state = SysState;
   settings_data.system_temp_sp = activeSetpoint;
   settings_data.room_temp = ambient_temp;
-  settings_data.monitor_remote_alarm = false; //:TODO -> implement endpoint to update this value.
-  settings_data.monitor_alarm_rstrt = false; //:TODO -> implement endpoint to update this value.
 
   // send data to peers.
   esp_err_t result = esp_now_send(NULL, (uint8_t *) &settings_data, sizeof(settings_data));
@@ -1601,6 +1617,10 @@ void send_data_to_peers()
   } else {
     ESP_LOG_LEVEL(ESP_LOG_ERROR, TAG, "[esp-now] error sending msg, reason: %s",  esp_err_to_name(result));
   }
+
+  // restart alarm settings variables.
+  settings_data.monitor_remote_alarm = false;
+  settings_data.monitor_alarm_rstrt = false;
 
   postToPeers = false;
   lastEspnowPost = currentMillis;
