@@ -1,1 +1,1 @@
-auto
+{"sys_mode": "auto"}

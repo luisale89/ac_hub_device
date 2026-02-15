@@ -6,4 +6,5 @@
 .vscode/ipch
 secrets.h
 credentials.h
+mqtt_credentials.h
 schema.json

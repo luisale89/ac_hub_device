@@ -1,3 +1,15 @@
 {
-  "sleep_control_enabled": false
+  "sleep_control_enabled": false,
+  "comp_nominal_current": 24,
+  "comp_amp_threshold": 1.15,
+  "discharge_max_t": 107,
+  "vapor_max_t": 60,
+  "exterior_max_t": 40,
+  "vapor_line_min_t": -5,
+  "fault_auto_recovery": true,
+  "max_recovery_attempts": 3,
+  "recovery_window": 120,
+  "user_setpoint": 24,
+  "auto_setpoint": 28,
+  "auto_wait_time": 10
 }
