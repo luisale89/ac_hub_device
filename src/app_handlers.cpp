@@ -3,196 +3,181 @@
 static const char *TAG = "CLIO-HANDLERS";
 
 // app hanlders
-void save_config_in_fs(system_config_struct *cnf) //[OK]
+esp_err_t handle_peerlist_update(JsonDocument &received_json)
 {
-  // read global variables that controls the config and store them in the fs.
-  char settings_buffer[256];
-  JsonDocument doc;
+  ESP_LOGI(TAG, "Actualizando lista de peers desde JSON...");
 
-  doc["sleep_control_enabled"] = cnf->sleep_control_enabled;
-  doc["comp_nominal_amp"] = cnf->comp_nominal_amp;
-  doc["comp_amp_threshold"] = cnf->comp_amp_threshold;
-  doc["discharge_max_t"] = cnf->discharge_max_t;
-  doc["liquid_max_t"] = cnf->liquid_max_t;
-  doc["exterior_max_t"] = cnf->exterior_max_t;
-  doc["vapor_line_min_t"] = cnf->vapor_line_min_t;
-  doc["fault_auto_recovery_en"] = cnf->fault_auto_recovery_en;
-  doc["max_recovery_attempts"] = cnf->max_recovery_attempts;
-  doc["recovery_window"] = cnf->recovery_window;
-  doc["user_setpoint"] = cnf->user_setpoint;
-  doc["auto_setpoint"] = cnf->auto_setpoint;
-  doc["auto_wait_time"] = cnf->auto_wait_time;
-
-  serializeJson(doc, settings_buffer, sizeof(settings_buffer));
-  save_data_in_fs(settings_buffer, "/Settings.txt");
-  return;
-}
-
-void save_operation_mode_in_fs(){
-  char op_mode_buffer[128];
-  JsonDocument doc;
-
-  switch (SysMode)
+  // 1. Validación de tamaño de buffer
+  const int max_buffer_size = 512;
+  if (measureJson(received_json) >= max_buffer_size)
   {
-  case SysModeEnum::AUTO_MODE:
-    doc["sys_mode"] = "auto";
-    break;
-
-  case SysModeEnum::COOL_MODE:
-    doc["sys_mode"] = "cool";
-    break;
-
-  case SysModeEnum::FAN_MODE:
-    doc["sys_mode"] = "fan";
-    break;
-  
-  default:
-    break;
+    ESP_LOGE(TAG, "Datos recibidos exceden el buffer de %d", max_buffer_size);
+    return ESP_ERR_INVALID_SIZE;
   }
 
-  serializeJson(doc, op_mode_buffer, sizeof(op_mode_buffer));
-  save_data_in_fs(op_mode_buffer, "/Modo.txt");
-  return;
-}
+  JsonDocument updated_json;
+  char output_data[max_buffer_size];
 
-void handle_peerlist_update(const char *received_data) {
+  const char *roles[] = {"controller", "monitor"};
+  uint8_t mac_buffer[6];
+  bool change_detected = false;
 
-    ESP_LOGI(TAG, "New data for espnow peers received..");
-    JsonDocument updated_json;
-    JsonDocument received_json;
-    char output_data[256];
-
-    DeserializationError error = deserializeJson(received_json, received_data);
-
-    if (error)
-    {   
-        ESP_LOGE(TAG, "Deserialization error with code: %s", error.c_str());
-        return;
-    } 
-    //get data
-    const char *controller_address = received_json["controller"] | "null";  //FF.FF.FF.FF.FF.FF
-    const char *monitor_address = received_json["monitor"] | "null";        //
-    uint8_t mac_address_buffer[6];
-
-    if (strcmp(controller_address, "null") != 0) //don't match
+  for (const char *role : roles)
+  {
+    if (received_json[role].isNull())
     {
-        ESP_LOGI(TAG, "New serial for CONTROLLER device received: %s", controller_address);
-        parse_mac_address(controller_address, '.', mac_address_buffer, 6, 16);
-        updated_json["controller"] = print_device_mac(mac_address_buffer);
-    }
-
-    if (strcmp(monitor_address, "null") != 0) //don't match
+      ESP_LOGW(TAG, "No se encontró el campo '%s' en el JSON recibido", role);
+      continue;
+    };
     {
-        ESP_LOGI(TAG, "New serial for MONITOR device received: %s", monitor_address);
-        parse_mac_address(monitor_address, '.', mac_address_buffer, 6, 16);
-        updated_json["monitor"] = print_device_mac(mac_address_buffer);
-    }
+      const char *mac_str = received_json[role];
 
-    //save data.
+      // 3. Validación y Parsing de MAC
+      if (is_valid_mac_str(mac_str))
+      {
+        char separator = strchr(mac_str, ':') ? ':' : (strchr(mac_str, '-') ? '-' : '.');
+        parse_mac_address(mac_str, separator, mac_buffer, 16); // Base 16 para Hex
+
+        char mac_str_copy[18];
+        format_device_mac(mac_buffer, mac_str_copy); // Formatea a mayúsculas con ':'
+
+        // 4. IMPORTANTE: .set() asegura que ArduinoJson copie el contenido del buffer local
+        updated_json[role].set(mac_str_copy);
+
+        ESP_LOGI(TAG, "MAC válida para %s: %s", role, mac_str_copy);
+        change_detected = true;
+      }
+      else
+      {
+        ESP_LOGE(TAG, "Formato de MAC inválido para %s: %s", role, mac_str);
+      }
+    }
+  }
+
+  // 5. Persistencia
+  if (change_detected)
+  {
     serializeJson(updated_json, output_data, sizeof(output_data));
-    save_data_in_fs(output_data, "/Peer.txt");
+    esp_err_t save_result = save_data_in_fs(output_data, "/Peer.txt");
+    if (save_result == ESP_OK)
+    {
+      ESP_LOGI(TAG, "Lista de peers guardada exitosamente");
+      return ESP_OK;
+    }
+    else
+    {
+      ESP_LOGE(TAG, "Error al escribir en el sistema de archivos");
+      return save_result;
+    }
+  }
 
-    return;
+  ESP_LOGW(TAG, "No se procesaron cambios válidos en la lista de peers");
+  return ESP_ERR_NOT_FOUND;
 }
 
-void handle_temp_sp_from_broker(const char *json) //[OK]
+esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
 {
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, json);
+  const char *variable = json["variable"] | "null"; // "system_config"
 
-  if (error)
+  if (strcmp(variable, "system_config") == 0)
   {
-    ESP_LOGE(TAG, "JSON Deserialization error raised with code: %s", error.c_str());
-    return;
+    ESP_LOGI(TAG, "system configuration settings.");
+    // Cambia la configuracion general del sistema
+    // read settings values from json.
+    system_config.sleep_control_en = json["sleep_control_en"] | false;
+    system_config.room_temp_control_en = json["room_temp_control_en"] | false;
+    system_config.comp_nominal_amp = json["comp_nominal_amp"] | 24;
+    system_config.comp_amp_threshold = json["comp_amp_threshold"] | 32;
+    system_config.discharge_max_temp = json["discharge_max_t"] | 107;
+    system_config.liquid_max_temp = json["liquid_max_t"] | 60;
+    system_config.vapor_line_min_temp = json["vapor_line_min_t"] | -5;
+    system_config.max_recovery_attempts = json["max_recovery_attempts"] | 3;
+    system_config.recovery_window = json["recovery_window"] | 120;
+
+    // save settings in filesystem.
+    save_config_in_fs();
+    //- successfully processed the system configuration update, return ESP_OK.
+    return ESP_OK;
   }
 
-  const char *variable = doc["variable"] | "null"; // "user_setpoint"
-  const int temp_value = doc["value"] | 24;                    // 24
-  ESP_LOGI(TAG, "Temp. sp received: %d °C", temp_value);
+  if (strcmp(variable, "mode_config") == 0)
+  {
+    ESP_LOGI(TAG, "auto mode configuration settings.");
+    // Cambia la configuracion del modo
+    const char *value = json["value"];  // "auto"
+    const int wait = json["wait"] | 15; // 15
+    const int temp = json["temp"] | 28; // 28
 
-  if (strcmp(variable, "user_setpoint") != 0) {
-    ESP_LOGE(TAG, "Invalid json variable, expected: 'user_setpoint'");
-    return;
+    if (strcmp(value, "auto") != 0)
+    {
+      ESP_LOGE(TAG, "invalid value in json, expected: 'auto'");
+      return ESP_ERR_INVALID_ARG;
+    }
+
+    if (wait <= 0 || wait > 60)
+    {
+      ESP_LOGE(TAG, "invalid range for wait value");
+      return ESP_ERR_INVALID_ARG;
+    }
+
+    if (temp < 16 || temp > 28)
+    {
+      ESP_LOGE(TAG, "invalid range for temp value");
+      return ESP_ERR_INVALID_ARG;
+    }
+
+    system_config.auto_setpoint = temp;
+    system_config.auto_wait_time = wait;
+    save_config_in_fs();
+    //- successfully processed the auto mode configuration, return ESP_OK.
+    return ESP_OK;
   }
 
-  if (temp_value < 16 || temp_value > 28) {
-    ESP_LOGE(TAG, "Invalid temperature range for 'user_setpoint' variable");
-    return;
-  }
-  system_config.user_setpoint = temp_value;
-  save_config_in_fs(&system_config);
-  //save data in filesystem
+  // invalid variable received in json document.
+  ESP_LOGE(TAG, "Invalid variable value in json document");
+  return ESP_ERR_INVALID_ARG;
 }
 
-void handle_system_config_from_broker(const char* json) //[OK]
+esp_err_t handle_system_settings_from_broker(JsonDocument &doc) //[OK]
 {
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, json);
-
-  if (error)
-  {
-    ESP_LOGE(TAG, "JSON Deserialization error raised with code: %s", error.c_str());
-    return;
-  }
-
-  const char *variable = doc["variable"] | "null"; // "system_config"
-
-  if (strcmp(variable, "system_config") != 0) {
-    ESP_LOGE(TAG, "Invalid json variable, expected: 'system_config'");
-    return;
-  }
-
-  // read settings values from json.
-  system_config.comp_nominal_amp = doc["comp_nominal_amp"] | system_config.comp_nominal_amp;
-  system_config.comp_amp_threshold = doc["comp_amp_threshold"] | system_config.comp_amp_threshold;
-  system_config.discharge_max_t = doc["discharge_max_t"] | system_config.discharge_max_t;
-  system_config.liquid_max_t = doc["liquid_max_t"] | system_config.liquid_max_t;
-  system_config.exterior_max_t = doc["exterior_max_t"] | system_config.exterior_max_t;
-  system_config.vapor_line_min_t = doc["vapor_line_min_t"] | system_config.vapor_line_min_t;
-  system_config.fault_auto_recovery_en = doc["fault_auto_recovery_en"] | system_config.fault_auto_recovery_en;
-  system_config.max_recovery_attempts = doc["max_recovery_attempts"] | system_config.max_recovery_attempts;
-  system_config.recovery_window = doc["recovery_window"] | system_config.recovery_window;
-
-  // save settings in filesystem.
-  save_config_in_fs(&system_config);
-}
-
-void handle_system_settings_from_broker(const char* json) //[OK]
-{
-  JsonDocument data_received;
-  DeserializationError error = deserializeJson(data_received, json);
-
-  if (error)
-  {
-    ESP_LOGE(TAG, "JSON Deserialization error raised with code: %s", error.c_str());
-    return;
-  }
-
-  const char *variable = data_received["variable"] | "null";
+  const char *variable = doc["variable"] | "null";
 
   if (strcmp(variable, "timectrl") == 0)
   {
     ESP_LOGI(TAG, "timectrl settings adjustment.");
     // Aqui hay que guardar la configuracion del control de apagado encendido
     // Cambia el horario de encendido o apagado
-    system_config.sleep_control_enabled = data_received["enabled"] | false;
-    save_config_in_fs(&system_config);
+    system_config.sleep_control_en = doc["enabled"] | false;
+    save_config_in_fs();
 
     SleepWakeCondition wake_condition = WAKE_ON_TIME; // default values
     SleepWakeCondition sleep_condition = SLEEP_ON_TIME;
-    const char *on_condition = data_received["on_condition"] | "on_time";
-    const char *off_condition = data_received["off_condition"] | "on_time";
-    
-    if (strcmp(on_condition, "on_time") == 0) {
-      wake_condition = WAKE_ON_TIME;} else {wake_condition = WAKE_ON_PRESENCE;
+    const char *on_condition = doc["on_condition"] | "on_time";
+    const char *off_condition = doc["off_condition"] | "on_time";
+
+    // on_condition y off_condition pueden ser "on_time" u "on_presence",
+    // se valida el valor recibido y se asigna la condicion correspondiente para cada caso.
+    if (strcmp(on_condition, "on_time") == 0)
+    {
+      wake_condition = WAKE_ON_TIME;
     }
-    if (strcmp(off_condition, "on_time") == 0) {
-      sleep_condition = SLEEP_ON_TIME;} else {sleep_condition = SLEEP_ON_ABSENCE;
+    else
+    {
+      wake_condition = WAKE_ON_PRESENCE;
     }
 
-    for (JsonPair schedule_item : data_received["schedule"].as<JsonObject>())
+    if (strcmp(off_condition, "on_time") == 0)
     {
-      //get day to be configured...
+      sleep_condition = SLEEP_ON_TIME;
+    }
+    else
+    {
+      sleep_condition = SLEEP_ON_ABSENCE;
+    }
+
+    for (JsonPair schedule_item : doc["schedule"].as<JsonObject>())
+    {
+      // get day to be configured...
       const char *schedule_item_key = schedule_item.key().c_str(); // "1", "2", "3", "4", "5", "6", "7"
       int intDay = atoi(schedule_item_key);
       char target_file[20];
@@ -206,13 +191,16 @@ void handle_system_settings_from_broker(const char* json) //[OK]
 
       // validations...
 
-      if (wake_time >= 2400 || wake_time < 0) {
+      if (wake_time >= 2400 || wake_time < 0)
+      {
         ESP_LOGE(TAG, "invalid 'wake_time' value received.. out of range");
-        return;
+        return ESP_ERR_INVALID_ARG;
       }
 
-      if (sleep_time >= 2400 || wake_time < 0) {
+      if (sleep_time >= 2400 || sleep_time < 0)
+      {
         ESP_LOGE(TAG, "invalid 'sleep_time' value received.. out of range.");
+        return ESP_ERR_INVALID_ARG;
       }
 
       // output
@@ -228,91 +216,106 @@ void handle_system_settings_from_broker(const char* json) //[OK]
       // save data in fs.
       save_data_in_fs(document, target_file);
     }
+    //-successfully processed the schedule configuration for all days, return ESP_OK.
+    return ESP_OK;
   }
 
-  else if (strcmp(variable, "mode_config") == 0)
-  {
-    ESP_LOGI(TAG, "auto mode configuration settings.");
-    // Cambia la configuracion del modo
-    const char *value = data_received["value"];           // "auto"
-    const int wait = data_received["wait"] | 15;           // 15
-    const int temp = data_received["temp"] | 28;           // 28
-
-    if (strcmp(value, "auto") != 0) {
-      ESP_LOGE(TAG, "invalid value in json, expected: 'auto'");
-      return;
-    } 
-
-    if (wait <= 0 || wait > 60) {
-      ESP_LOGE(TAG, "invalid range for wait value");
-      return;
-    }
-
-    if (temp < 16 || temp > 28) {
-      ESP_LOGE(TAG, "invalid range for temp value");
-      return;
-    }
-
-    system_config.auto_setpoint = temp;
-    system_config.auto_wait_time = wait;
-    save_config_in_fs(&system_config);
-  }
-
-  else if (strcmp(variable, "system_mode") == 0)
-  {
-    ESP_LOGI(TAG, "system operation mode settings");
-    // Cambia el modo de operacion
-    const char *value = data_received["value"]; // "cool"
-
-    if (strcmp(value, "cool") == 0) {SysMode = COOL_MODE;}
-    else if (strcmp(value, "fan") == 0) {SysMode = FAN_MODE;}
-    else if (strcmp(value, "auto") == 0) {SysMode = AUTO_MODE;}
-    else {ESP_LOGE(TAG, "Invalid value mode in json");}
-    
-    // save in filesystem.
-    save_operation_mode_in_fs();
-  }
-
-  else
-  {
-    ESP_LOGE(TAG, "Invalid variable value in json document");
-  }
+  // invalid variable received in json document.
+  ESP_LOGE(TAG, "Invalid variable value in json document");
+  return ESP_ERR_INVALID_ARG;
 }
 
-void handle_op_state_from_broker(const char* json) //[OK, OK]
+esp_err_t handle_cmd_from_broker(JsonDocument &doc) //[OK, OK]
 {
-  // String input;
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, json);
-  if (error)
-  {
-    ESP_LOGE(TAG, "JSON Deserialization error raised with code: %s", error.c_str());
-    return;
-  }
   const char *variable = doc["variable"] | "unkonw"; // "system_state"
-  const char *value = doc["value"] | "invalid";
 
-  if (strcmp(variable, "system_state") == 0) {
+  if (strcmp(variable, "system_state") == 0)
+  {
+    const char *value = doc["value"] | "invalid";
     ESP_LOGI(TAG, "system_state variable received");
-    if (strcmp(value,"on") == 0) {SysState = SYSTEM_ON;}
-    else if (strcmp(value, "off") == 0) {SysState = SYSTEM_OFF;}
-    else if (strcmp(value, "sleep") == 0) {SysState = SYSTEM_SLEEP;}
-    else {ESP_LOGI(TAG, "Error: invalid value received from broker on -system_state-");}
-    return;
-  }
-  
-  if (strcmp(variable, "fault_restart") == 0) {
-    ESP_LOGI(TAG, "fault_restart variable received -> updating flag value");
-    //set settings variable to be sent to the monitor device
-    //this will restart the fault in the monitor device
-    if (strcmp(value, "now") == 0) {
-      fault_reset_flag = true;
-    } else {
-      ESP_LOGI(TAG, "Invalue value received from broker on -fault_restart- endpoint");
+    if (strcmp(value, "on") == 0)
+    {
+      SysState = SYSTEM_ON;
     }
-    return;
+    else if (strcmp(value, "off") == 0)
+    {
+      SysState = SYSTEM_OFF;
+    }
+    else if (strcmp(value, "sleep") == 0)
+    {
+      SysState = SYSTEM_SLEEP;
+    }
+    else
+    {
+      ESP_LOGI(TAG, "Error: invalid value received from broker on -system_state-");
+      return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+  }
+
+  if (strcmp(variable, "temp_sp") == 0)
+  {
+    const int value = doc["value"] | 24;
+    ESP_LOGI(TAG, "temp_sp variable received");
+    if (value < 16 || value > 28)
+    {
+      ESP_LOGI(TAG, "Error: invalid value received from broker on -temp_sp- variable");
+      return ESP_ERR_INVALID_ARG;
+    }
+    system_config.user_setpoint = value;
+    save_config_in_fs();
+    return ESP_OK;
+  }
+
+  if (strcmp(variable, "system_mode") == 0)
+  {
+    const char *value = doc["value"] | "invalid";
+
+    ESP_LOGI(TAG, "system operation mode cmd received");
+    // Cambia el modo de operacion
+
+    if (strcmp(value, "cool") == 0)
+    {
+      SysMode = COOL_MODE;
+    }
+    else if (strcmp(value, "fan") == 0)
+    {
+      SysMode = FAN_MODE;
+    }
+    else if (strcmp(value, "auto") == 0)
+    {
+      SysMode = AUTO_MODE;
+    }
+    else
+    {
+      ESP_LOGE(TAG, "Invalid value mode in json");
+      return ESP_ERR_INVALID_ARG;
+    }
+
+    // save in filesystem.
+    save_operation_mode_in_fs();
+    //- successfully processed the system mode configuration,
+    return ESP_OK;
+  }
+
+  if (strcmp(variable, "fault_restart") == 0)
+  {
+    const char *value = doc["value"] | "invalid";
+    ESP_LOGI(TAG, "fault_restart variable received -> updating flag value");
+    // set settings variable to be sent to the monitor device
+    // this will restart the fault in the monitor device
+    if (strcmp(value, "now") == 0)
+    {
+      fault_restart_attempt_flag = true;
+    }
+    else
+    {
+      ESP_LOGI(TAG, "Invalue value received from broker on -fault_restart- endpoint");
+      return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
   }
 
   ESP_LOGE(TAG, "invalid variable received in json payload..");
-  return;
+  return ESP_ERR_INVALID_ARG;
 }

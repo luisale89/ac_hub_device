@@ -1,1 +1,1 @@
-{"sys_state": "off"}
+{"sys_state": "off", "err_state": false}

@@ -1,8 +1,9 @@
 #include "clio_globals.h"
 #include <esp_wifi.h>
-#include <esp_system.h>
+#include <esp_log.h>
 // #include <Arduino.h>
-static const char* TAG = "CLIO-MAIN";
+static const char *TAG = "CLIO-MAIN";
+// cierre implementación de funciones
 
 // Handler de tareas de lectura de sensores para nucleo 0 o 1
 TaskHandle_t Task1;
@@ -10,20 +11,19 @@ TaskHandle_t Task1;
 // flags
 // TODO: Declare volatile type for global variables
 static bool lastRadarState = false;
-static bool cooling_relay_state = false;
-static bool fan_relay_state = false;
-static bool monitor_compressor_state = false;
-static bool post_alarm_flag = false;
+static bool publish_incident_flag = false;
 
 // Fault recovery variables
 static int fault_recovery_attempts = 0;
-static unsigned long first_fault_time = 0; // Time of first recovery attempt in the current window
-static unsigned long last_fault_time = 0; // Time of last fault event
+static unsigned long first_fault_time = 0;       // Time of first recovery attempt in the current window
+static unsigned long last_fault_time = 0;        // Time of last fault event
+static unsigned long lastIncidentPubAttempt = 0; // Time when the last fault was posted to the broker
 
 // Time Variables
-static const unsigned long radarDebounceTime = 1L * 30000L;     // 30 seconds rebound for radar sensor.
-static const unsigned long buttonTimeOut = 3L * 1000L;          // button pressed for 3seconds
-static const unsigned long controllerInterval = 1L * 5000L;     // delay between sensor updates, 5 seconds
+static const unsigned long incidentPublishInterval = 1 * 60000UL; // minimum time between posting consecutive faults to the broker, 1 minute.
+static const unsigned long radarDebounceTime = 1 * 30000UL;       // 30 second rebound for radar sensor.
+static const unsigned long buttonTimeOut = 3 * 1000UL;            // button pressed for 3seconds
+static const unsigned long controllerInterval = 1 * 5000UL;       // delay between sensor updates, 5 seconds
 static unsigned long lastControllerTime = 0;
 static unsigned long lastButtonPress = 0;
 static unsigned long lastRadarChange = 0;
@@ -31,53 +31,28 @@ static unsigned long radarStateTime = 0;
 
 // ### OPERATIONAL FUNCTIONS ###
 
-void save_operation_state_in_fs() //[OK] [OK]
-{
-
-  char op_state_buffer[128];
-  JsonDocument doc;
-
-  switch (SysState)
-  {
-  case SYSTEM_ON:
-    doc["sys_state"] = "on";
-    // save_data_in_fs("on", fileName);
-    break;
-  
-  case SYSTEM_OFF:
-    doc["sys_state"] = "off";
-    // save_data_in_fs("off", fileName);
-    break;
-
-  case SYSTEM_SLEEP:
-    doc["sys_state"] = "sleep";
-    // save_data_in_fs("sleep", fileName);
-    break;
-  }
-
-  serializeJson(doc, op_state_buffer, sizeof(op_state_buffer));
-  save_data_in_fs(op_state_buffer, "/Estado.txt");
-  return;
-}
-
 void temp_setpoint_controller() // [OK]
 {
   const unsigned long current = millis();
-  const unsigned long AutoTimeOut = (unsigned long)system_config.auto_wait_time * 60000L;
+  const unsigned long AutoTimeOut = (unsigned long)system_config.auto_wait_time * 60000UL;
   const int auto_setpoint = system_config.auto_setpoint;
   const int user_setpoint = system_config.user_setpoint;
 
   switch (SysMode)
   {
   case AUTO_MODE:
-    if (radarState) { // restart the counter if the radar state is true (movement detection)
+    if (radarState)
+    { // restart the counter if the radar state is true (movement detection)
       radarStateTime = current;
     }
-    if (current - radarStateTime > AutoTimeOut) {
+    if (current - radarStateTime > AutoTimeOut)
+    {
       activeSetpoint = auto_setpoint;
       peersMode = AUTO_MODE;
       ESP_LOGI(TAG, "system Temp. adjust = 'AutoTemp'");
-    } else {
+    }
+    else
+    {
       activeSetpoint = user_setpoint;
       peersMode = COOL_MODE;
       ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp'");
@@ -95,13 +70,12 @@ void temp_setpoint_controller() // [OK]
     peersMode = FAN_MODE;
     ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp'");
     break;
-
   }
 }
 
-void sleep_state_controller() //[OK]
+void system_sleep_controller() //[OK]
 {
-  if (!system_config.sleep_control_enabled)
+  if (!system_config.sleep_control_en)
   {
     ESP_LOGI(TAG, "- Time Control (timectrl) disabled by settings");
     sleep_flag = FLAG_UNSET;
@@ -110,12 +84,12 @@ void sleep_state_controller() //[OK]
   }
 
   DateTime now = DS3231_RTC.now();
-  const char* Day = Week_days[now.dayOfTheWeek()];
+  const char *Day = Week_days[now.dayOfTheWeek()];
   char target_file[20];
   sprintf(target_file, "/%s.txt", Day);
   JsonDocument doc;
 
-  const char* day_schedule = load_data_from_fs(target_file);
+  const char *day_schedule = load_data_from_fs(target_file);
   DeserializationError error = deserializeJson(doc, day_schedule);
 
   if (error)
@@ -124,12 +98,12 @@ void sleep_state_controller() //[OK]
     return;
   }
 
-  const int WAKE_TIME = doc["wake_at"] | 759;   // 730
+  const int WAKE_TIME = doc["wake_at"] | 759;    // 730
   const int SLEEP_TIME = doc["sleep_at"] | 1559; // 2130
   const SleepWakeCondition WAKE_CONDITION = doc["wake_condition"] | WAKE_ON_TIME;
   const SleepWakeCondition SLEEP_CONDITION = doc["sleep_condition"] | SLEEP_ON_ABSENCE;
   daySleepControl = doc["enabled"] | false;
-  
+
   if (!daySleepControl)
   {
     sleep_flag = FLAG_UNSET;
@@ -162,12 +136,13 @@ void sleep_state_controller() //[OK]
       switch (WAKE_CONDITION)
       {
       case WAKE_ON_PRESENCE:
-        if (radarState) {
+        if (radarState)
+        {
           sleep_flag = FLAG_DOWN;
           SysState = SYSTEM_ON;
         }
         break;
-      
+
       case WAKE_ON_TIME:
         sleep_flag = FLAG_DOWN;
         SysState = SYSTEM_ON;
@@ -183,12 +158,13 @@ void sleep_state_controller() //[OK]
       switch (SLEEP_CONDITION)
       {
       case SLEEP_ON_ABSENCE:
-        if(!radarState){
+        if (!radarState)
+        {
           sleep_flag = FLAG_UP;
           SysState = SYSTEM_SLEEP;
         }
         break;
-      
+
       case SLEEP_ON_TIME:
         sleep_flag = FLAG_UP;
         SysState = SYSTEM_SLEEP;
@@ -205,19 +181,22 @@ void update_IO() //[ok]
   const bool currentRadarReading = digitalRead(RADAR);
   const bool manuBtnPressed = digitalRead(MANUAL_BTN) ? false : true; // input = 0 means button pressed
 
-  if (currentRadarReading != lastRadarState) {
+  if (currentRadarReading != lastRadarState)
+  {
     lastRadarChange = millis();
     lastRadarState = currentRadarReading;
   }
 
   // Lectura de sensor de movimiento.
-  if (current_millis - lastRadarChange > radarDebounceTime) {
+  if (current_millis - lastRadarChange > radarDebounceTime)
+  {
     radarState = lastRadarState;
     // radarState has been updated after radarDebounceTime period. this prevents false presence/absence readings.
   }
 
-  //manual button
-  if (!manuBtnPressed) { // button not pressed.
+  // manual button
+  if (!manuBtnPressed)
+  { // button not pressed.
     lastButtonPress = current_millis;
   }
 
@@ -227,13 +206,15 @@ void update_IO() //[ok]
     ESP_LOGI(TAG, "Manual button has been pressed..");
     lastButtonPress = current_millis;
 
-    if (SysFaultState == STATUS_ERROR) {
+    if (SysFaultState == STATUS_ERROR)
+    {
       ESP_LOGI(TAG, "System in FAULT state. Restarting fault condition first.");
-      fault_reset_flag = true;
+      fault_restart_attempt_flag = true;
       return;
     }
 
-    if (SysFaultState == STATUS_WARNING) {
+    if (SysFaultState == STATUS_WARNING)
+    {
       ESP_LOGI(TAG, "System in WARNING state. Ignoring manual button press.");
       return;
     }
@@ -249,7 +230,7 @@ void update_IO() //[ok]
       ESP_LOGI(TAG, "Turning on the system.");
       SysState = SYSTEM_ON;
       break;
-    
+
     case SYSTEM_SLEEP:
       ESP_LOGI(TAG, "imposible to turn on the system on sleep mode.");
       break;
@@ -257,212 +238,174 @@ void update_IO() //[ok]
   }
 }
 
-void print_vars_in_serial() {
+void console_log()
+{
 
   JsonDocument root;
-  char doc[256];
+  char doc[512];
   const unsigned long current_millis = millis();
-  
+
   // logging
   root["sys_mode"] = SysMode;
   root["sys_state"] = SysState;
   root["presence"] = radarState;
-  root["timectrl"] = system_config.sleep_control_enabled;
+  root["timectrl"] = system_config.sleep_control_en;
   root["user_sp"] = system_config.user_setpoint;
   root["active_sp"] = activeSetpoint;
   root["controller"] = controller_peer_online;
   root["monitor"] = monitor_peer_online;
   root["sleep_flag"] = sleep_flag;
-  root["board_temp"] = case_pcb_temperature;
-  root["heap"] = esp_get_free_heap_size();
-  root["min_heap"] = esp_get_minimum_free_heap_size();
+  root["room_temp"] = room_temperature;
+  root["cfc"] = system_alarms.controller_ac;
+  root["mfc"] = system_alarms.monitor_ac;
+  root["sstt"] = SysFaultState;
+  root["frcv"] = fault_recovery_attempts;
   //- output
-  serializeJson(root, doc);
-  ESP_LOGD(TAG, "%s", doc);
+  serializeJsonPretty(root, doc);
+  ESP_LOGI(TAG, "%s", doc);
 
   return;
 }
 
-void check_for_updates() {
-  // send variables when important changes happen.
-  if (controller_peer_online) {
-    if (cooling_relay_state != controller_data.cooling_relay) {
-      cooling_relay_state = controller_data.cooling_relay;
-      postVariablesToBroker = true; // set flag to post variables.
-    }
-  }
-
-  if (monitor_peer_online) {
-    // check compressor state change.
-    if (monitor_compressor_state != monitor_data.compressor_state) {
-      monitor_compressor_state = monitor_data.compressor_state;
-      postVariablesToBroker = true;
-    }
-  }
-
-  // if there is a sysState change
-  if (PrevSysState != SysState)
-  {
-    ESP_LOGI(TAG, "System state has changed. sending updates.");
-    SysStateBuffer = PrevSysState;
-    PrevSysState = SysState; // assign PrevSysState the current SysState
-    save_operation_state_in_fs();
-    postMqttStateUpdate = true; // post state update.
-    postVariablesToBroker = true; // update variables to broker.
-  }
- 
-  return;
-}
-
-AlarmCode calculate_alarm_code() //[OK]
+bool is_alarm_code_cleared()
 {
-  // Revisa las variables del monitor y devuelve el código de falla correspondiente.
 
-  // COMPRESSOR STALL CHECK
-  if (controller_peer_online == true && monitor_peer_online == true) {
-    if (controller_data.cooling_relay 
-      && controller_data.seconds_since_last_cooling_rq > 360 
-      && monitor_data.compressor_state != true) {
-      // the compressor should be running after 6 minutes of cooling request but is not.
-      return COMPRESSOR_STALL;
-    }
+  if (system_alarms.controller_ac == AlarmCode::NORMAL && system_alarms.monitor_ac == AlarmCode::NORMAL)
+  {
+    return true;
   }
 
-  // MONITOR FAULT CODES CHECK SEQUENCE
-  if (monitor_peer_online == true) {
-    if (monitor_data.compressor_current > system_config.comp_nominal_amp + system_config.comp_amp_threshold) {
-      return HIGH_COMP_CURRENT;
-    }
-  
-    if (monitor_data.discharge_temp > system_config.discharge_max_t) {
-      return HIGH_DISCHARGE_TEMP;
-    }
-  
-    if (monitor_data.high_pressure < 1) { // high pressure threshold (0,5V = open switch)
-      return HIGH_PRESSURE_SWITCH;
-    }
-
-    if (monitor_data.liquid_temp > system_config.liquid_max_t) {
-      return HIGH_LIQUID_TEMP;
-    }
-    
-    if (monitor_data.low_pressure < 1) { // low pressure threshold (0,5V = open switch)
-      return LOW_PRESSURE_SWITCH;
-    }
-
-    if (monitor_data.vapor_temp < system_config.vapor_line_min_t) {
-      return LOW_VAPOR_TEMP;
-    }
-
-    if (monitor_data.ambient_temp > system_config.exterior_max_t) {
-      return HIGH_EXTERIOR_TEMP;
-    }
-  }
-
-  // CONTROLLER FAULT CODES CHECK SEQUENCE
-  if (controller_peer_online == true) {
-    if (controller_data.drain_switch == false) { // drain switch open
-      return DRAIN_SWITCH_OPEN;
-    }
-  }
-
-  return NORMAL;
+  return false;
 }
 
-void reset_system_fault() {
+void reset_system_fault()
+{
 
-  if (!fault_reset_flag) {
+  if (!fault_restart_attempt_flag)
+  {
     return;
   }
 
-  fault_reset_flag = false;
-  SysFaultState = STATUS_OK;
-  fault_recovery_attempts = 0;
-  first_fault_time = 0;
-  ESP_LOGI(TAG, "System reset from fault state. Resuming normal operation.");
+  if (is_alarm_code_cleared())
+  {
+    // if the system is in a recovery attempt, but both monitor and controller report NORMAL, we can assume the recovery was successful and reset the fault state.
+    ESP_LOGI(TAG, "Recovery attempt successful. Restarting system fault state.");
+    fault_restart_attempt_flag = false;
+    SysFaultState = STATUS_OK;
+    save_operation_state_in_fs(); // save the new fault state in the filesystem immediately after a successful recovery, to persist this critical information.
+  }
+  return;
 }
 
-void update_fault_state(AlarmCode fault_code) {
+void update_fault_state()
+{
 
-  const unsigned long WINDOW_1_HOUR = 3600000L; // 1 hour
   unsigned long current_time = millis();
+  const unsigned long WINDOW_1_HOUR = 3600000UL; // 1 hour
 
-  // Reset por tiempo (si pasó 1 hora sin bloquearse)
-  if (fault_recovery_attempts > 0 
-    && SysFaultState != STATUS_ERROR 
-    && (current_time - first_fault_time >= WINDOW_1_HOUR)) {
+  // Reset por tiempo (si pasó 1 hora sin bloquearse en error a pesar de haber detectado una falla,
+  // se resetea el contador de intentos de recuperación para permitir nuevos intentos de recuperación ante nuevas fallas)
+  if (fault_recovery_attempts > 0 && SysFaultState != STATUS_ERROR && (current_time - last_fault_time >= WINDOW_1_HOUR))
+  {
     fault_recovery_attempts = 0;
-    ESP_LOGI(TAG, "Recovery attempts counter reset after 1 hour of stable operation.");
+    ESP_LOGI(TAG, "Recovery attempts counter has been reset after 1 hour of stable operation.");
   }
-  
-  if (SysFaultState != STATUS_OK) {
-    // if the recovery of the fault not yet happens.
+
+  if (SysFaultState != STATUS_OK)
+  {
+    // si aun no se ha recuperado de la falla detectada, no se actualiza el estado del sistema ante nuevas fallas
+    // detectadas para evitar que el sistema entre en un ciclo de WARNING-ERROR-WARNING ante fallas recurrentes.
     return; // state already set
   }
 
-  if (fault_code == NORMAL) {
-    return; // no fault code detected, waiting for new alarm
+  if (is_alarm_code_cleared())
+  {
+    // if there is no alarm code active in neither the monitor nor the controller, we assume there is no fault condition to report.
+    return;
   }
 
-  if (fault_recovery_attempts == 0) {
+  // TODO_ discriminar según el tipo de falla si se ira directamente al STATUS_ERROR
+  // p.ej: Falla de sobrecorriente debería tener menos oportunidades de rearme.. o ir directo al ERROR.
+  //  modificar fault_recovery_attempts para cambiar la permisividad de los rearmes según el código de falla.
+
+  if (fault_recovery_attempts == 0)
+  {
     first_fault_time = current_time;
   }
 
   fault_recovery_attempts++;
   last_fault_time = current_time;
 
-  if (fault_recovery_attempts >= system_config.max_recovery_attempts) {
+  if (fault_recovery_attempts >= system_config.max_recovery_attempts)
+  {
+    // se alcanzó el número máximo de intentos de recuperación permitido,
     SysFaultState = STATUS_ERROR;
     ESP_LOGI(TAG, "!!! BLOQUEO PERMANENTE !!!");
-
-  } else {
+    fault_recovery_attempts = 0;  // reset recovery attempts counter after reaching max attempts
+    save_operation_state_in_fs(); // save the new fault state in the filesystem immediately after reaching the error state, to persist this critical information.
+  }
+  else
+  {
     SysFaultState = STATUS_WARNING;
     ESP_LOGI(TAG, "Sistema en modo WARNING, esperando para recuperar...");
   }
+
   // post alarm to mqtt
-  post_alarm_flag = true;
+  publish_incident_flag = true;
 
   // log fault event
-  ESP_LOG_LEVEL(ESP_LOG_WARN, TAG, "Fault triggered: Code %d, Attempts: %d", fault_code, fault_recovery_attempts);
+  ESP_LOG_LEVEL(ESP_LOG_WARN, TAG, "Fault triggered:, Attempts: %d", fault_recovery_attempts);
+  ESP_LOGI(TAG, "Fault details: Controller AC: %d, Monitor AC: %d", system_alarms.controller_ac, system_alarms.monitor_ac);
 
+  return;
 }
 
-void fault_recovery_controller() {
+void fault_recovery_loop()
+{
 
   unsigned long current_time = millis();
-  const unsigned long RECOV_WINDOW = (unsigned long)system_config.recovery_window * 60000L;
+  const unsigned long RECOV_WINDOW = (unsigned long)system_config.recovery_window * 1000UL; // recovery window time in milliseconds, calculated from the value set in the system configuration.
 
-  // fault code calculation
-  AlarmCode fault_code = calculate_alarm_code();
   // new fault code handler
-  update_fault_state(fault_code);
-
-  if (post_alarm_flag) {
-    incident_struct incident = {
-      fault_code, first_fault_time, last_fault_time, fault_recovery_attempts
-    };
-    if (post_incident_to_broker(&incident) == ESP_OK) {
-      post_alarm_flag = false;
-      ESP_LOGI(TAG, "Incident posted to mqtt broker");
-    }
-  }
+  update_fault_state();
+  reset_system_fault();
 
   // Manejo de estados
-  switch (SysFaultState) {
-    case STATUS_WARNING:
-      if (current_time - last_fault_time >= RECOV_WINDOW) {
-        SysFaultState = STATUS_OK; // try to recover from warning stt
-        ESP_LOGI(TAG, "System recovered from WARNING state.");
-      }
-      break;
+  switch (SysFaultState)
+  {
+  case STATUS_WARNING:
+    if (current_time - last_fault_time >= RECOV_WINDOW)
+    {
+      fault_restart_attempt_flag = true; // set flag to attempt recovery in the next loop.
+    }
+    break;
 
-    case STATUS_ERROR:
-      // wait for the reset signal.
-      reset_system_fault();
-      break;
+  case STATUS_ERROR:
+    // wait for the reset signal from the user.
+    break;
 
-    case STATUS_OK:
-      break;
+  case STATUS_OK:
+    break;
+  }
+
+  if (publish_incident_flag && (current_time - lastIncidentPubAttempt >= incidentPublishInterval))
+  {
+    lastIncidentPubAttempt = current_time;
+
+    incident_struct incident = {
+        first_fault_time, last_fault_time, fault_recovery_attempts};
+
+    const esp_err_t ret = publish_new_incident(&incident);
+
+    if (ret == ESP_OK)
+    {
+      ESP_LOGI(TAG, "Incident published correctly to the broker");
+      publish_incident_flag = false;
+    }
+    else
+    {
+      ESP_LOGE(TAG, "Error posting mqtt incident msg... retrying in the next cycle");
+    }
   }
 }
 
@@ -474,12 +417,12 @@ void sensors_and_interface_controller(void *pvParameters)
   //-
   ESP_LOGI(TAG, "task in second core...");
   //-
-  const TickType_t xDelay = pdMS_TO_TICKS(50); // 50ms
+  const TickType_t xDelay = pdMS_TO_TICKS(100); // 100ms
   for (;;)
-  { 
-    //lee temperatura desde los sensores
-    update_case_temperature();
-    //network led animation
+  {
+    // lee temperatura desde los sensores
+    clio_temp_sensors_loop();
+    // network led animation
     network_led_animation(ntw_led_style);
     // task delay
     vTaskDelay(xDelay);
@@ -490,14 +433,14 @@ void sensors_and_interface_controller(void *pvParameters)
 void setup()
 {
   Serial.begin(115200);
-  esp_log_level_set("*", ESP_LOG_DEBUG); //set all TAGS on debug.
+  esp_log_level_set("*", ESP_LOG_DEBUG); // set all TAGS on debug.
   ESP_LOGI(TAG, "** Hello!, System setup started... **");
   // pins definition
   // pinMode(BROKER_LED, OUTPUT);          // broker connection led.
-  pinMode(NETWORK_LED, OUTPUT);         // network connection led. using analogWrite
-  pinMode(MANUAL_BTN, INPUT); // remote board button.
-  pinMode(RADAR, INPUT);  // sensor de presencia
-  pinMode(AP_BTN, INPUT);            // Wifi Restart and configuration.
+  pinMode(NETWORK_LED, OUTPUT); // network connection led. using analogWrite
+  pinMode(MANUAL_BTN, INPUT);   // remote board button.
+  pinMode(RADAR, INPUT);        // sensor de presencia
+  pinMode(AP_BTN, INPUT);       // Wifi Restart and configuration.
 
 #ifndef ESP32
   while (!Serial)
@@ -505,27 +448,39 @@ void setup()
 #endif
 
   ESP_LOGI(TAG, "-> SETTING UP RTC SERVICE");
-  if (clio_rtc_setup() != ESP_OK) {
+  if (clio_rtc_setup() != ESP_OK)
+  {
     ESP_LOGE(TAG, "ERROR SETTING UP RTC SERVICE - stop");
-    while(1){;}
+    while (1)
+    {
+      ;
+    }
   }
   ESP_LOGI(TAG, "RTC SERVICE OK");
 
   ESP_LOGI(TAG, "-> SETTING UP LittleFS SERVICE.");
-  if (clio_spiffs_setup() != ESP_OK){
+  if (clio_spiffs_setup() != ESP_OK)
+  {
     ESP_LOGE(TAG, "ERROR SETTING UP LittleFS SERVICE - stop");
-    while(1){;}
+    while (1)
+    {
+      ;
+    }
   } //-
   ESP_LOGI(TAG, "LittleFS SERVICE OK.");
 
   // Inicio Sensores de temperatura
   ESP_LOGI(TAG, "-> SETTING UP DS18B20 SENSORS");
-  clio_case_tempsensor_setup();
+  clio_temp_sensors_setup();
 
   // load values from .txt files
   ESP_LOGI(TAG, "-> LOADING ALL DATA FROM FS AND INITIALIZING VARS");
   clio_fsdata_setup(); //-
   ESP_LOGI(TAG, "-> ALL DATA LOADED");
+
+  //---------------------------------------- WifiSetup
+  ESP_LOGI(TAG, "-> SETTING UP WIFI SERVICE");
+  clio_wifi_setup();
 
   // ------- datetime from ntp server
   ESP_LOGI(TAG, "-> SETTING UP SNTP SERVICE");
@@ -533,30 +488,40 @@ void setup()
   //---------------------------------------- set device identifiers
   uint8_t client_mac_address[6];
   esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, client_mac_address);
-  if (ret != ESP_OK) {
+  if (ret != ESP_OK)
+  {
     ESP_LOGE(TAG, "ERROR MAC ADDRESS INVALID.. IMPOSIBLE TO READ MAC ADDRESS FROM WIFI_IF_STA");
-    while(1){;}
+    while (1)
+    {
+      ;
+    }
   };
-  strcpy(hub_device_serial, print_device_serial(client_mac_address));
+  format_device_serial(client_mac_address, hub_device_serial);
   ESP_LOGD(TAG, "-->> DEVICE SERIAL: %s", hub_device_serial);
-    //- set ap-ssid value
-  snprintf(AP_SSID, sizeof(AP_SSID), "CLIO-%s", hub_device_serial);
+  //- set ap-ssid value
+  // snprintf(AP_SSID, sizeof(AP_SSID), "CLIO-%s", hub_device_serial);
+  format_ap_ssid(client_mac_address, AP_SSID);
   ESP_LOGD(TAG, "-->> AP SSID: %s", AP_SSID);
-  //---------------------------------------- WifiSetup
-  ESP_LOGI(TAG, "-> SETTING UP WIFI SERVICE");
-  clio_wifi_setup();
   //---------------------------------------- esp_now settings
   ESP_LOGI(TAG, "-> SETTING UP ESP_NOW SERVICE");
-  if (clio_espnow_cnf() != ESP_OK){
+  if (clio_espnow_cnf() != ESP_OK)
+  {
     ESP_LOGE(TAG, "ERROR SETTING UP ESP-NOW, STOP");
-    while(1){;}
+    while (1)
+    {
+      ;
+    }
   };
   ESP_LOGI(TAG, "ESP_NOW SERVICE OK!");
   //---------------------------------------- mqtt settings
   ESP_LOGI(TAG, "-> SETTING UP MQTT SERVICE");
-  if (clio_mqtt_setup() != ESP_OK) {
+  if (clio_mqtt_setup() != ESP_OK)
+  {
     ESP_LOGE(TAG, "ERROR INITIALIZING MQTT SERVICE - STOP");
-    while(1){;}
+    while (1)
+    {
+      ;
+    }
   }
   ESP_LOGI(TAG, "MQTT SERVICE OK");
 
@@ -564,12 +529,12 @@ void setup()
   ESP_LOGI(TAG, "Creating FREERTOS task...");
   xTaskCreatePinnedToCore(
       sensors_and_interface_controller, /* Function to implement the task */
-      "Task1",     /* Name of the task */
-      10000,       /* Stack size in words */
-      NULL,        /* Task input parameter */
-      0,           /* Priority of the task */
-      &Task1,      /* Task handle. */
-      0);          /* Core */
+      "Task1",                          /* Name of the task */
+      10000,                            /* Stack size in words */
+      NULL,                             /* Task input parameter */
+      0,                                /* Priority of the task */
+      &Task1,                           /* Task handle. */
+      0);                               /* Core */
 
   //---------------------------------------- end of setup ---
   ESP_LOGI(TAG, "** SETUP COMPLETED **");
@@ -577,22 +542,21 @@ void setup()
 
 void loop()
 {
-  //main loop.
+  // main loop.
   clio_wifi_loop();
   clio_espnow_loop();
   clio_mqtt_loop();
-  check_for_updates();
-  update_time_counter();
+  time_counter_loop();
+  fault_recovery_loop();
   update_IO();
-  fault_recovery_controller();
 
   if (millis() - lastControllerTime > controllerInterval)
   {
-    sleep_state_controller(); // Funcion que controla el apagado y encendido automatico (Sleep)
-    temp_setpoint_controller(); // Funcion que regula latemperatura segun el modo (Cool, auto, fan)
-    print_vars_in_serial(); // system log variables.
     lastControllerTime = millis(); // update time var
+    system_sleep_controller();     // Funcion que controla el apagado y encendido automatico (Sleep)
+    temp_setpoint_controller();    // Funcion que regula latemperatura segun el modo (Cool, auto, fan)
+    console_log();                 // system log variables.
   }
-  //delay
+  // delay
   delay(10);
 }
