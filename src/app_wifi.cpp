@@ -78,7 +78,7 @@ void check_for_ota_update()
     return;
   }
 
-  if (OTA_CHECK_COUNT > 2)
+  if (OTA_CHECK_COUNT >= 2)
   {
     ESP_LOGI(TAG, "Ya se ha verificado OTA %d veces en esta ventana, esperando la próxima ventana...", OTA_CHECK_COUNT);
     return; // Evitar múltiples verificaciones dentro de la misma ventana

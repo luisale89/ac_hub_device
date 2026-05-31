@@ -25,6 +25,7 @@ static const char *mqtt_username = MQTT_USERNAME;
 static const char *mqtt_password = MQTT_PASSWORD;
 static const int mqtt_port = 8883;
 static bool post_mqttconn_ntf = false;
+static bool publish_cmd_update = false;
 static int last_mqttconnection_err = -1;
 
 // time consts
@@ -205,6 +206,8 @@ void mqtt_message_callback(char *message_topic, byte *payload, unsigned int leng
     // cmd from broker
     ESP_LOGI(TAG, "handling operation command received from broker");
     handler_result = handle_cmd_from_broker(json_payload);
+    publish_cmd_update = handler_result == ESP_OK ? true : false;
+    return; // this topic does not sends ack to the broker.
   }
 
   else if (strcmp(message_topic, peerlist_update_topic) == 0)
@@ -536,10 +539,19 @@ bool is_system_state_changed()
     publish_update = true;
   }
 
+  if (publish_cmd_update && currentMillis - sensorLastPub > block_rapid_updates_interval)
+  {
+    // if there is an update triggered by a command received from the broker, we want to trigger an
+    // immediate mqtt update to notify the change, but we also want to rate-limit these updates to prevent
+    // flooding the broker with updates if multiple commands are received in a short period of time.
+    ESP_LOGI(TAG, "Command update detected!");
+    publish_cmd_update = false;
+    publish_update = true;
+  }
+
   if (controller_data.cooling_relay != prevCoolingRelayState && currentMillis - sensorLastPub > block_rapid_updates_interval)
   {
     // if there is a change in the cooling relay state, we want to trigger an immediate mqtt update to notify the change,
-    // but we don't need to save this state in the filesystem, since it's not critical to persist it.
     // we also want to rate-limit the updates triggered by changes in the cooling relay state, since it's a variable that can change frequently and we don't want to flood the broker with updates.
     ESP_LOGI(TAG, "Cooling relay state change detected!");
     prevCoolingRelayState = controller_data.cooling_relay;
@@ -570,12 +582,12 @@ void clio_mqtt_loop()
   const unsigned long currentMillis = millis();
   const unsigned long INTERVAL_ACTIVE = 1 * 60000UL; // 1 minute
   const unsigned long INTERVAL_IDLE = 5 * 60000UL;   // 5 minutes
-  const bool state_changed = is_system_state_changed();
+  const bool publish_update = is_system_state_changed();
   // update mqtt posting interval based on system state
   sensorPubInterval = (SysState == SYSTEM_ON) ? INTERVAL_ACTIVE : INTERVAL_IDLE;
 
   // check if its time to post a message.
-  if ((currentMillis - sensorLastPub > sensorPubInterval) || state_changed)
+  if ((currentMillis - sensorLastPub > sensorPubInterval) || publish_update)
   {
     // send all the sensor data to the mqtt broker
     sensorLastPub = currentMillis;
