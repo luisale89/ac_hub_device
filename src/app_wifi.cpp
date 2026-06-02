@@ -6,14 +6,13 @@ static const char *TAG = "CLIO-WIFI";
 static bool last_ap_btn_state = false;
 static bool ap_btn_state = false;
 static bool ap_btn_handled = false;
-static bool wiFiReconnectFlag = false;
+static bool offlineOperationActive = false;
 static bool first_ota_check_done = false;
 static int wiFiReconnectAttempt = 0;
 static const int MAX_WIFI_RECONNECT_ATT = 33;
-static unsigned long lastWifiDisconnect = 0;
 static const unsigned long WIFI_RECONNECT_BACKOFF = 5000UL; // 5 seconds backoff between reconnect attempts
 static unsigned long lastApBtnChange = 0;
-static unsigned long lastWifiReconnect = 0;
+static unsigned long lastOfflineOperation = 0;
 static unsigned long lastOtaCheck = 0;
 static const unsigned long wifiReconnectInterval = 5 * 60000UL; // 5 minutos para intentar reconectar al wifi.
 static const unsigned long BTN_DEBOUNCE_TIME = 250UL;           // 250ms rebound time constant;
@@ -130,20 +129,12 @@ void check_for_ota_update()
 void set_station_for_espnow_offline_mode()
 {
   // this function allows offline esp-now communication, in case of getting disconnected from the WiFi network.
-  ntw_led_style = BLINK_05X; // LED slow blink
-  ESP_LOGI(TAG, "[wifi] Setting up to communicate over esp-now disconnected from the router.");
-  const int currentChannel = WiFi.channel();
-  ESP_LOGI(TAG, "[wifi] channel: %d", currentChannel);
   espnow_connection_state = ESPNOW_OFFLINE;
-
-  // Stop automatic station reconnection and keep the current WiFi channel fixed.
-  WiFi.setAutoReconnect(false);
-  WiFi.disconnect(false, false);
-  esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-
-  lastWifiReconnect = millis(); // set timer for router reconnect logic
-  wiFiReconnectFlag = false;
+  lastOfflineOperation = millis(); // set timer for reconnect to the router
+  offlineOperationActive = true;
+  ntw_led_style = BLINK_05X; // LED slow blink indicates offline mode, will attempt to reconnect to the router every wifiReconnectInterval (5 minutes).
   ESP_LOGI(TAG, "[wifi] ESP-NOW offline mode set. Will attempt to reconnect to router every %d minutes.", wifiReconnectInterval / 60000);
+  ESP_LOGI(TAG, "[wifi] channel: %d", WiFi.channel());
   return;
 }
 
@@ -160,13 +151,19 @@ void WiFiEvent(arduino_event_t *wifi_event)
     break;
   case ARDUINO_EVENT_WIFI_STA_START:
     ESP_LOGI(TAG, "[wifi] Client started");
-    ntw_led_style = BLINK; // start blinking when the station starts, will be turned off when connected to the router.
+    ntw_led_style = BLINK_05X; // start blinking when the station starts, will be turned off when connected to the router.
     break;
   case ARDUINO_EVENT_WIFI_STA_STOP:
     ESP_LOGI(TAG, "[wifi] Clients stopped");
     break;
   case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-    ESP_LOGI(TAG, "[wifi] Connected to the AP");
+    espnow_connection_state = ESPNOW_ONLINE;
+    ntw_led_style = ALLWAYS_ON; // turn on the LED when connected to the router.
+    wiFiReconnectAttempt = 0;
+    ESP_LOGI(TAG, "[wifi] Connected to the AP on channel: %d", WiFi.channel());
+    ESP_LOGI(TAG, "RSSI: %d", WiFi.RSSI());
+    ESP_LOGI(TAG, "STA MAC Address: %s", WiFi.macAddress().c_str());
+    ESP_LOGI(TAG, "SOFT AP MAC Address: %s", WiFi.softAPmacAddress().c_str());
     break;
 
   case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -176,34 +173,20 @@ void WiFiEvent(arduino_event_t *wifi_event)
       set_station_for_espnow_offline_mode();
       break;
     }
-
-    if (millis() - lastWifiDisconnect < WIFI_RECONNECT_BACKOFF)
-    {
-      break;
-    }
-
-    lastWifiDisconnect = millis();
-    ntw_led_style = BLINK;
+    ntw_led_style = BLINK_05X;
     wiFiReconnectAttempt++;
     ESP_LOGI(TAG, "[wifi] Disconnected from WiFi Access Point");
     ESP_LOGI(TAG, "lost connection. Reason code: %d", wifi_event->event_info.wifi_sta_disconnected.reason);
     ESP_LOGI(TAG, "Reconnect attempt # %d..", wiFiReconnectAttempt);
     espnow_connection_state = ESPNOW_IDLE;
-    WiFi.reconnect();
+    WiFi.reconnect(); // Intentar reconectar inmediatamente, luego el loop se encargará de los intentos posteriores con backoff.
     break;
 
   case ARDUINO_EVENT_WIFI_STA_AUTHMODE_CHANGE:
     ESP_LOGI(TAG, "[wifi] Authentication mode of access point has changed");
     break;
   case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-    WiFi.setAutoReconnect(true);
-    espnow_connection_state = ESPNOW_ONLINE;
-    wiFiReconnectAttempt = 0;
-    ESP_LOGI(TAG, "Router connection completed!! -> channel: %d", WiFi.channel());
     ESP_LOGI(TAG, "GOT IP Address: %s", WiFi.localIP().toString());
-    ESP_LOGI(TAG, "RSSI: %d", WiFi.RSSI());
-    ESP_LOGI(TAG, "STA MAC Address: %s", WiFi.macAddress().c_str());
-    ESP_LOGI(TAG, "SOFT AP MAC Address: %s", WiFi.softAPmacAddress().c_str());
     break;
 
   case ARDUINO_EVENT_WIFI_STA_LOST_IP:
@@ -290,11 +273,11 @@ void clio_wifi_loop() //[ok] - Mejorado con manejo de errores y reconexiones
 
   default:
     // WiFi.status() is other than WL_CONNECTED
-    if (currentMillis - lastWifiReconnect >= wifiReconnectInterval && wiFiReconnectFlag == true)
+    if (currentMillis - lastOfflineOperation >= wifiReconnectInterval && offlineOperationActive == true)
     {
+      // Intentar reconectar al WiFi después de un período de espera, solo si el flag de reconexión está activo.
       ESP_LOGI(TAG, "[wifi] testing new connection to the router after working in disconnected mode");
-      lastWifiReconnect = currentMillis;
-      wiFiReconnectFlag = false;
+      offlineOperationActive = false;
       wiFiReconnectAttempt = 0;
       WiFi.reconnect();
     }

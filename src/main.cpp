@@ -82,8 +82,15 @@ void system_sleep_controller() //[OK]
     daySleepControl = false;
     return;
   }
+  else
+  {
+    ESP_LOGI(TAG, "- Time Control (timectrl) enabled by settings");
+  }
+  // -- utc to local time conversion --
+  DateTime utc_now = DS3231_RTC.now();
+  uint32_t vzla_epoch = utc_now.unixtime() - (4 * 3600); // Convert UTC to local time (UTC-4)
+  DateTime now(vzla_epoch);
 
-  DateTime now = DS3231_RTC.now();
   const char *Day = Week_days[now.dayOfTheWeek()];
   char target_file[20];
   sprintf(target_file, "/%s.txt", Day);
@@ -107,7 +114,7 @@ void system_sleep_controller() //[OK]
   if (!daySleepControl)
   {
     sleep_flag = FLAG_UNSET;
-    ESP_LOGD(TAG, "%s", "time control disabled for today");
+    ESP_LOGI(TAG, "%s", "time control disabled for today");
     return;
   }
 
@@ -292,7 +299,6 @@ void reset_system_fault()
     ESP_LOGI(TAG, "Recovery attempt successful. Restarting system fault state.");
     fault_restart_attempt_flag = false;
     SysFaultState = STATUS_OK;
-    fault_recovery_attempts = 0;
     save_operation_state_in_fs(); // save the new fault state in the filesystem immediately after a successful recovery, to persist this critical information.
   }
   return;
