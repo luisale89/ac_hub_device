@@ -292,6 +292,7 @@ void reset_system_fault()
     ESP_LOGI(TAG, "Recovery attempt successful. Restarting system fault state.");
     fault_restart_attempt_flag = false;
     SysFaultState = STATUS_OK;
+    fault_recovery_attempts = 0;
     save_operation_state_in_fs(); // save the new fault state in the filesystem immediately after a successful recovery, to persist this critical information.
   }
   return;
@@ -341,7 +342,6 @@ void update_fault_state()
     // se alcanzó el número máximo de intentos de recuperación permitido,
     SysFaultState = STATUS_ERROR;
     ESP_LOGI(TAG, "!!! BLOQUEO PERMANENTE !!!");
-    fault_recovery_attempts = 0;  // reset recovery attempts counter after reaching max attempts
     save_operation_state_in_fs(); // save the new fault state in the filesystem immediately after reaching the error state, to persist this critical information.
   }
   else

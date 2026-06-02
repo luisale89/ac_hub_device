@@ -299,16 +299,19 @@ esp_err_t publish_new_incident(incident_struct *incident)
 {
 
   const unsigned long currentMillis = millis();
+  const unsigned long time_since_first = currentMillis - incident->first_fault_time;
+  const int fault_recovery_attempts = incident->fault_recovery_attempts;
+  const int tmbf_divider = (fault_recovery_attempts - 1) > 0 ? (fault_recovery_attempts - 1) : 1; // to avoid division by zero and to give a more accurate tmbf in the first recovery attempt.
   JsonDocument doc;
 
   doc["variable"] = "incident";
   doc["value"] = (int)SysFaultState;
   doc["metadata"]["controller_ac"] = system_alarms.controller_ac;
   doc["metadata"]["monitor_ac"] = system_alarms.monitor_ac;
-  doc["metadata"]["ms_since_first"] = currentMillis - incident->first_fault_time;
-  doc["metadata"]["tbf_ms"] = incident->last_fault_time - incident->first_fault_time; // time between faults in ms
-  doc["metadata"]["recov_attempts"] = incident->fault_recovery_attempts;
-  doc["metadata"]["attempts_left"] = system_config.max_recovery_attempts - incident->fault_recovery_attempts;
+  doc["metadata"]["ms_since_first"] = time_since_first;
+  doc["metadata"]["tmbf_ms"] = time_since_first / tmbf_divider; //
+  doc["metadata"]["recov_attempts"] = fault_recovery_attempts;
+  doc["metadata"]["attempts_left"] = system_config.max_recovery_attempts - fault_recovery_attempts;
 
   char message[CLIO_MQTT_BUFF_SIZE];
   esp_err_t err = clio_serialize_json(doc, message, sizeof(message));
