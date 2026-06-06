@@ -446,7 +446,7 @@ esp_err_t connectToMQTT()
 
   // try new connection.
   const unsigned long currentMillis = millis();
-  ntw_led_style = BLINK_2X; // fast blinking led indicates wifi connection and trying to connect to the mqtt broker.
+  ntw_led_style = ALLWAYS_ON; // solid led indicates wifi connection but disconnected from the mqtt broker.
   //-
 
   if (currentMillis - lastMqttReconnect < mqttReconnectInterval)
@@ -456,11 +456,11 @@ esp_err_t connectToMQTT()
 
   lastMqttReconnect = currentMillis;
 
-  if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) // check if time is synchronized before trying mqtt connection
+  if (!is_time_synchronized())
+  // check if time is synchronized before trying mqtt connection
   {
     // X.509 validation requires synchronization time
     ESP_LOGW(TAG, "Tiempo no sincronizado. No se puede conectar al broker MQTT aun.");
-
     return ESP_FAIL;
   };
 

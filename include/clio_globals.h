@@ -67,6 +67,7 @@ void format_device_mac(const uint8_t *mac_addr, char *out_str);
 void format_device_serial(const uint8_t *mac_addr, char *out_str);
 void format_ap_ssid(const uint8_t *mac_addr, char *out_str);
 void clio_sntp_setup();
+bool is_time_synchronized();
 esp_err_t clio_rtc_setup();
 
 //-littleFS

@@ -83,16 +83,109 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
   {
     ESP_LOGI(TAG, "system configuration settings.");
     // Cambia la configuracion general del sistema
-    // read settings values from json.
-    system_config.sleep_control_en = json["sleep_control_en"] | false;
-    system_config.room_temp_control_en = json["room_temp_control_en"] | false;
-    system_config.comp_nominal_amp = json["comp_nominal_amp"] | 24;
-    system_config.comp_amp_threshold = json["comp_amp_threshold"] | 32;
-    system_config.discharge_max_temp = json["discharge_max_t"] | 107;
-    system_config.liquid_max_temp = json["liquid_max_t"] | 60;
-    system_config.vapor_line_min_temp = json["vapor_line_min_t"] | -5;
-    system_config.max_recovery_attempts = json["max_recovery_attempts"] | 3;
-    system_config.recovery_window = json["recovery_window"] | 120;
+    bool config_updated = false; // flag para detectar si se actualizó alguna configuración
+
+    if (!json["sleep_control_en"].isNull() && json["sleep_control_en"].is<bool>())
+    {
+      system_config.sleep_control_en = json["sleep_control_en"];
+      config_updated = true;
+    }
+
+    if (!json["room_temp_control_en"].isNull() && json["room_temp_control_en"].is<bool>())
+    {
+      system_config.room_temp_control_en = json["room_temp_control_en"];
+      config_updated = true;
+    }
+
+    if (!json["const_nominal_amp"].isNull() && json["const_nominal_amp"].is<int>())
+    {
+      const int nominal_amp = json["const_nominal_amp"];
+      if (nominal_amp < 1 || nominal_amp > 100)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'const_nominal_amp'. Must be between 1 and 100.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.comp_nominal_amp = nominal_amp;
+      config_updated = true;
+    }
+
+    if (!json["comp_amp_threshold"].isNull() && json["comp_amp_threshold"].is<int>())
+    {
+      const int amp_threshold = json["comp_amp_threshold"];
+      if (amp_threshold < 1 || amp_threshold > 100)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'comp_amp_threshold'. Must be between 1 and 100.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.comp_amp_threshold = amp_threshold;
+      config_updated = true;
+    }
+
+    if (!json["discharge_max_t"].isNull() && json["discharge_max_t"].is<int>())
+    {
+      const int discharge_max_temp = json["discharge_max_t"];
+      if (discharge_max_temp < 50 || discharge_max_temp > 150)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'discharge_max_t'. Must be between 50 and 150.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.discharge_max_temp = discharge_max_temp;
+      config_updated = true;
+    }
+
+    if (!json["liquid_max_t"].isNull() && json["liquid_max_t"].is<int>())
+    {
+      const int liquid_max_temp = json["liquid_max_t"];
+      if (liquid_max_temp < 20 || liquid_max_temp > 100)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'liquid_max_t'. Must be between 20 and 100.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.liquid_max_temp = liquid_max_temp;
+      config_updated = true;
+    }
+
+    if (!json["vapor_line_min_t"].isNull() && json["vapor_line_min_t"].is<int>())
+    {
+      const int vapor_line_min_temp = json["vapor_line_min_t"];
+      if (vapor_line_min_temp < -20 || vapor_line_min_temp > 30)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'vapor_line_min_t'. Must be between -20 and 30.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.vapor_line_min_temp = vapor_line_min_temp;
+      config_updated = true;
+    }
+
+    if (!json["max_recovery_attempts"].isNull() && json["max_recovery_attempts"].is<int>())
+    {
+      const int max_recovery_attempts = json["max_recovery_attempts"];
+      if (max_recovery_attempts < 0 || max_recovery_attempts > 10)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'max_recovery_attempts'. Must be between 0 and 10.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.max_recovery_attempts = max_recovery_attempts;
+      config_updated = true;
+    }
+
+    if (!json["recovery_window"].isNull() && json["recovery_window"].is<int>())
+    {
+      const int recovery_window = json["recovery_window"];
+      if (recovery_window < 30 || recovery_window > 300)
+      {
+        ESP_LOGE(TAG, "Invalid value for 'recovery_window'. Must be between 30 and 300 seconds.");
+        return ESP_ERR_INVALID_ARG;
+      }
+      system_config.recovery_window = recovery_window;
+      config_updated = true;
+    }
+
+    if (!config_updated)
+    {
+      ESP_LOGW(TAG, "No se recibieron valores válidos para actualizar la configuración del sistema.");
+      return ESP_ERR_INVALID_ARG;
+    }
 
     // save settings in filesystem.
     save_config_in_fs();

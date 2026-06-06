@@ -151,7 +151,7 @@ void WiFiEvent(arduino_event_t *wifi_event)
     break;
   case ARDUINO_EVENT_WIFI_STA_START:
     ESP_LOGI(TAG, "[wifi] Client started");
-    ntw_led_style = BLINK_05X; // start blinking when the station starts, will be turned off when connected to the router.
+    ntw_led_style = BLINK; // start blinking when the station starts, will be turned off when connected to the router.
     break;
   case ARDUINO_EVENT_WIFI_STA_STOP:
     ESP_LOGI(TAG, "[wifi] Clients stopped");
@@ -173,7 +173,7 @@ void WiFiEvent(arduino_event_t *wifi_event)
       set_station_for_espnow_offline_mode();
       break;
     }
-    ntw_led_style = BLINK_05X;
+    ntw_led_style = BLINK;
     wiFiReconnectAttempt++;
     ESP_LOGI(TAG, "[wifi] Disconnected from WiFi Access Point");
     ESP_LOGI(TAG, "lost connection. Reason code: %d", wifi_event->event_info.wifi_sta_disconnected.reason);
