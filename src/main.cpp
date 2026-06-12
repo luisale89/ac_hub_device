@@ -9,7 +9,6 @@ static const char *TAG = "CLIO-MAIN";
 TaskHandle_t Task1;
 
 // flags
-// TODO: Declare volatile type for global variables
 static bool lastRadarState = false;
 static bool publish_incident_flag = false;
 
@@ -185,7 +184,7 @@ void system_sleep_controller() //[OK]
 void update_IO() //[ok]
 {
   const unsigned long current_millis = millis();
-  const bool currentRadarReading = digitalRead(RADAR);
+  const bool currentRadarReading = digitalRead(RADAR) ? true : false; // input = 1 means movement detected
   const bool manuBtnPressed = digitalRead(MANUAL_BTN) ? false : true; // input = 0 means button pressed
 
   if (currentRadarReading != lastRadarState)
@@ -418,18 +417,16 @@ void fault_recovery_loop()
 // ### TASK FUNCTIONS ###
 
 // Hace la lectura de los sensores y la actualización de la interfáz gráfica.
-void sensors_and_interface_controller(void *pvParameters)
+void interface_controller(void *pvParameters)
 {
   //-
-  ESP_LOGI(TAG, "task in second core...");
+  ESP_LOGI(TAG, "interface controller task running on core: %d", xPortGetCoreID());
   //-
   const TickType_t xDelay = pdMS_TO_TICKS(100); // 100ms
   for (;;)
   {
-    // lee temperatura desde los sensores
-    clio_temp_sensors_loop();
     // network led animation
-    network_led_animation(ntw_led_style);
+    network_led_animation();
     // task delay
     vTaskDelay(xDelay);
   }
@@ -531,16 +528,16 @@ void setup()
   }
   ESP_LOGI(TAG, "MQTT SERVICE OK");
 
-  // Crea la tarea de lectura de sensores en el segundo procesador.
+  // Crea la tarea del controlador de interfaz.
   ESP_LOGI(TAG, "Creating FREERTOS task...");
   xTaskCreatePinnedToCore(
-      sensors_and_interface_controller, /* Function to implement the task */
-      "Task1",                          /* Name of the task */
-      10000,                            /* Stack size in words */
-      NULL,                             /* Task input parameter */
-      0,                                /* Priority of the task */
-      &Task1,                           /* Task handle. */
-      0);                               /* Core */
+      interface_controller, /* Function to implement the task */
+      "Task1",              /* Name of the task */
+      10000,                /* Stack size in words */
+      NULL,                 /* Task input parameter */
+      0,                    /* Priority of the task */
+      &Task1,               /* Task handle. */
+      0);                   /* Core */
 
   //---------------------------------------- end of setup ---
   ESP_LOGI(TAG, "** SETUP COMPLETED **");
@@ -552,6 +549,7 @@ void loop()
   clio_wifi_loop();
   clio_espnow_loop();
   clio_mqtt_loop();
+  clio_temp_sensors_loop();
   time_counter_loop();
   fault_recovery_loop();
   update_IO();
@@ -561,7 +559,7 @@ void loop()
     lastControllerTime = millis(); // update time var
     system_sleep_controller();     // Funcion que controla el apagado y encendido automatico (Sleep)
     temp_setpoint_controller();    // Funcion que regula latemperatura segun el modo (Cool, auto, fan)
-    console_log();                 // system log variables.
+    // console_log();                 // system log variables.
   }
   // delay
   delay(10);

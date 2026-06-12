@@ -62,7 +62,7 @@ void clio_fsdata_setup();
 //- helpers
 bool is_valid_mac_str(const char *str);
 void parse_mac_address(const char *str, char sep, byte *bytes, int base);
-void network_led_animation(LedAnimationStyle animation_style);
+void network_led_animation();
 void format_device_mac(const uint8_t *mac_addr, char *out_str);
 void format_device_serial(const uint8_t *mac_addr, char *out_str);
 void format_ap_ssid(const uint8_t *mac_addr, char *out_str);

@@ -1,6 +1,5 @@
 #include "clio_globals.h"
 #include <esp_sntp.h>
-#include <time.h>
 #include <ctype.h> // Para isxdigit
 
 static const char *TAG = "CLIO-HELPERS";
@@ -12,16 +11,16 @@ static unsigned long lastNetworkLedBlink = 0;
 // NTP
 static const char *ntpServer = "pool.ntp.org";
 static const char *ntpServer2 = "time.google.com";
-static const char *ntpServer3 = "time.nist.gov";
 static const long gmtOffset_sec = 0; // UTC time, no offset
 static const int daylightOffset_sec = 0;
 
 // functions
 
-void network_led_animation(LedAnimationStyle animation_style)
+void network_led_animation()
 {
   //-
   const unsigned long current = millis();
+  LedAnimationStyle animation_style = ntw_led_style; // read the current animation style from the global variable, which can be updated by other parts of the system to change the LED behavior in real time.
   switch (animation_style)
   {
   case PULSE:
@@ -145,9 +144,9 @@ void update_rtc_from_ntp() // [OK] [OK]
 void timeavailable(struct timeval *tml) // [OK] [OK]
 {
   // this should be called every hour automatically..
-  ESP_LOGI(TAG, "[RTC] Got time adjustment from NTP! latest datetime is now available");
-  update_rtc_from_ntp(); // update RTC with latest time from NTP server.
   sntp_sync_done = true; // set flag to indicate that time is now synchronized, allowing other processes that depend on time sync to proceed.
+  update_rtc_from_ntp(); // update RTC with latest time from NTP server.
+  ESP_LOGI(TAG, "[RTC] Got time adjustment from NTP! latest datetime is now available");
   return;
 }
 
@@ -162,7 +161,7 @@ void clio_sntp_setup()
   ESP_LOGI(TAG, "Creating SNTP server configuration.");
   sntp_set_sync_interval(3600000UL); // 1 hour in milliseconds
   sntp_set_time_sync_notification_cb(timeavailable);
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer, ntpServer2, ntpServer3); // configura tiempo desde el servidor NTP
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer, ntpServer2); // configura tiempo desde el servidor NTP
   return;
 }
 
