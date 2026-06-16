@@ -85,19 +85,19 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
     // Cambia la configuracion general del sistema
     bool config_updated = false; // flag para detectar si se actualizó alguna configuración
 
-    if (!json["sleep_control_en"].isNull() && json["sleep_control_en"].is<bool>())
+    if (json["sleep_control_en"].is<bool>())
     {
       system_config.sleep_control_en = json["sleep_control_en"];
       config_updated = true;
     }
 
-    if (!json["room_temp_control_en"].isNull() && json["room_temp_control_en"].is<bool>())
+    if (json["room_temp_control_en"].is<bool>())
     {
       system_config.room_temp_control_en = json["room_temp_control_en"];
       config_updated = true;
     }
 
-    if (!json["const_nominal_amp"].isNull() && json["const_nominal_amp"].is<int>())
+    if (json["const_nominal_amp"].is<int>())
     {
       const int nominal_amp = json["const_nominal_amp"];
       if (nominal_amp < 1 || nominal_amp > 100)
@@ -109,7 +109,7 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
       config_updated = true;
     }
 
-    if (!json["comp_amp_threshold"].isNull() && json["comp_amp_threshold"].is<int>())
+    if (json["comp_amp_threshold"].is<int>())
     {
       const int amp_threshold = json["comp_amp_threshold"];
       if (amp_threshold < 1 || amp_threshold > 100)
@@ -121,7 +121,7 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
       config_updated = true;
     }
 
-    if (!json["discharge_max_t"].isNull() && json["discharge_max_t"].is<int>())
+    if (json["discharge_max_t"].is<int>())
     {
       const int discharge_max_temp = json["discharge_max_t"];
       if (discharge_max_temp < 50 || discharge_max_temp > 150)
@@ -133,7 +133,7 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
       config_updated = true;
     }
 
-    if (!json["liquid_max_t"].isNull() && json["liquid_max_t"].is<int>())
+    if (json["liquid_max_t"].is<int>())
     {
       const int liquid_max_temp = json["liquid_max_t"];
       if (liquid_max_temp < 20 || liquid_max_temp > 100)
@@ -145,7 +145,7 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
       config_updated = true;
     }
 
-    if (!json["vapor_line_min_t"].isNull() && json["vapor_line_min_t"].is<int>())
+    if (json["vapor_line_min_t"].is<int>())
     {
       const int vapor_line_min_temp = json["vapor_line_min_t"];
       if (vapor_line_min_temp < -20 || vapor_line_min_temp > 30)
@@ -157,7 +157,7 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
       config_updated = true;
     }
 
-    if (!json["max_recovery_attempts"].isNull() && json["max_recovery_attempts"].is<int>())
+    if (json["max_recovery_attempts"].is<int>())
     {
       const int max_recovery_attempts = json["max_recovery_attempts"];
       if (max_recovery_attempts < 0 || max_recovery_attempts > 10)
@@ -169,7 +169,7 @@ esp_err_t handle_system_config_from_broker(JsonDocument &json) //[OK]
       config_updated = true;
     }
 
-    if (!json["recovery_window"].isNull() && json["recovery_window"].is<int>())
+    if (json["recovery_window"].is<int>())
     {
       const int recovery_window = json["recovery_window"];
       if (recovery_window < 30 || recovery_window > 300)

@@ -81,10 +81,7 @@ void system_sleep_controller() //[OK]
     daySleepControl = false;
     return;
   }
-  else
-  {
-    ESP_LOGI(TAG, "- Time Control (timectrl) enabled by settings");
-  }
+
   // -- utc to local time conversion --
   DateTime utc_now = DS3231_RTC.now();
   uint32_t vzla_epoch = utc_now.unixtime() - (4 * 3600); // Convert UTC to local time (UTC-4)
@@ -101,6 +98,8 @@ void system_sleep_controller() //[OK]
   if (error)
   {
     ESP_LOGE(TAG, "JSON Deserialization error code: %s", error.c_str());
+    sleep_flag = FLAG_UNSET;
+    daySleepControl = false;
     return;
   }
 
@@ -426,6 +425,7 @@ void interface_controller(void *pvParameters)
   for (;;)
   {
     // network led animation
+    clio_temp_sensors_loop();
     network_led_animation();
     // task delay
     vTaskDelay(xDelay);
@@ -549,7 +549,6 @@ void loop()
   clio_wifi_loop();
   clio_espnow_loop();
   clio_mqtt_loop();
-  clio_temp_sensors_loop();
   time_counter_loop();
   fault_recovery_loop();
   update_IO();

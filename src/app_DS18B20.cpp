@@ -18,7 +18,7 @@ void clio_temp_sensors_loop()
     if (current_time - lastTempRequest >= tempRequestDelay)
     {
         //-
-        double roomTempBuffer = room_temp_sensor.getTempCByIndex(0);
+        float roomTempBuffer = room_temp_sensor.getTempCByIndex(0);
         if (roomTempBuffer == -127.0)
         {
             ESP_LOGE(TAG, "Error -127 leyendo el sensor en el pin %s", ROOM_TEMP_PIN);

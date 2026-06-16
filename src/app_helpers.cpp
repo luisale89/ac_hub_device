@@ -152,7 +152,10 @@ void timeavailable(struct timeval *tml) // [OK] [OK]
 
 bool is_time_synchronized()
 {
-  return sntp_sync_done;
+  return sntp_sync_done ? true : false;
+  // return the status of time synchronization,
+  // allowing other parts of the system to check if time is synchronized before
+  // performing operations that depend on accurate time.
 }
 
 void clio_sntp_setup()

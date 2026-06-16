@@ -152,6 +152,15 @@ void mqtt_message_callback(char *message_topic, byte *payload, unsigned int leng
   //--- pong
   esp_err_t handler_result = ESP_OK;
 
+  // Validate payload length before copying
+  if (length >= CLIO_MQTT_BUFF_SIZE)
+  {
+    ESP_LOGE(TAG, "MQTT payload too large: %d bytes (max: %d)", length, CLIO_MQTT_BUFF_SIZE - 1);
+    handler_result = ESP_ERR_INVALID_SIZE;
+    publish_ack_to_broker(handler_result, "no-sid");
+    return;
+  }
+
   // copy payload to a char array and add null terminator for JSON deserialization
   char Mensaje[CLIO_MQTT_BUFF_SIZE];
   ESP_LOGI(TAG, "MQTT Message of lenght: %d arrived on topic: %s", length, message_topic);
