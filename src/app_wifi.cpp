@@ -14,6 +14,7 @@ static const unsigned long WIFI_RECONNECT_BACKOFF = 5000UL; // 5 seconds backoff
 static unsigned long lastApBtnChange = 0;
 static unsigned long lastOfflineOperation = 0;
 static unsigned long lastOtaCheck = 0;
+static unsigned long last_disconnect_time = 0;
 static const unsigned long wifiReconnectInterval = 5 * 60000UL; // 5 minutos para intentar reconectar al wifi.
 static const unsigned long BTN_DEBOUNCE_TIME = 250UL;           // 250ms rebound time constant;
 static const unsigned long AP_BTN_LONG_PRESS_TIME = 3000UL;     // 3 segundos para considerar una pulsación larga en el botón de AP.
@@ -167,6 +168,15 @@ void WiFiEvent(arduino_event_t *wifi_event)
     break;
 
   case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+    // Add debounce to prevent rapid state changes
+
+    if (millis() - last_disconnect_time < 1000UL) // 1 second debounce
+    {
+      ESP_LOGW(TAG, "[wifi] Disconnect debounced, ignoring");
+      break;
+    }
+    last_disconnect_time = millis();
+
     if (wiFiReconnectAttempt >= MAX_WIFI_RECONNECT_ATT)
     {
       ESP_LOGI(TAG, "[wifi] reached max_reconnect_attempts.");

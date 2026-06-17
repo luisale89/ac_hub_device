@@ -11,6 +11,8 @@ TaskHandle_t Task1;
 // flags
 static bool lastRadarState = false;
 static bool publish_incident_flag = false;
+static SysModeEnum lastPeersMode = COOL_MODE; // Para detectar el flanco de cambio
+static FlowFlag autoModeFlag = FLAG_UNSET;
 
 // Fault recovery variables
 static int fault_recovery_attempts = 0;
@@ -19,14 +21,20 @@ static unsigned long last_fault_time = 0;        // Time of last fault event
 static unsigned long lastIncidentPubAttempt = 0; // Time when the last fault was posted to the broker
 
 // Time Variables
-static const unsigned long incidentPublishInterval = 1 * 60000UL; // minimum time between posting consecutive faults to the broker, 1 minute.
-static const unsigned long radarDebounceTime = 1 * 30000UL;       // 30 second rebound for radar sensor.
-static const unsigned long buttonTimeOut = 3 * 1000UL;            // button pressed for 3seconds
-static const unsigned long controllerInterval = 1 * 5000UL;       // delay between sensor updates, 5 seconds
+static const unsigned long incidentPublishInterval = 60000UL;     // minimum time between posting consecutive faults to the broker, 1 minute.
+static const unsigned long radarDebounceTime = 1000UL;            // 1 second rebound for radar sensor.
+static const unsigned long buttonTimeOut = 3000UL;                // button pressed for 3seconds
+static const unsigned long controllerInterval = 5000UL;           // delay between sensor updates, 5 seconds
+static const unsigned long PRECENSE_RATE_CALC_INTERVAL = 60000UL; // interval to calculate presence rate, 1 minute.
+static const unsigned long AUTO_MIN_DURATION = 600000UL;          // 10 minutos
 static unsigned long lastControllerTime = 0;
 static unsigned long lastButtonPress = 0;
 static unsigned long lastRadarChange = 0;
-static unsigned long radarStateTime = 0;
+static unsigned long emptyRoomTime = 0;
+static unsigned long lastSampleTime = 0;
+static unsigned long presenceDuration = 0;
+static unsigned long lastPresenceRateCalculation = 0;
+static unsigned long timeEnteredAuto = 0; // Time when the system entered AUTO_MODE, used to determine when to switch to COOL_MODE based on presence and time in auto mode.
 
 // ### OPERATIONAL FUNCTIONS ###
 
@@ -40,34 +48,97 @@ void temp_setpoint_controller() // [OK]
   switch (SysMode)
   {
   case AUTO_MODE:
-    if (radarState)
-    { // restart the counter if the radar state is true (movement detection)
-      radarStateTime = current;
-    }
-    if (current - radarStateTime > AutoTimeOut)
+  {
+    // Actualización constante de tiempos de presencia/ausencia
+    if (presence_rate > 0.30)
     {
-      activeSetpoint = auto_setpoint;
-      peersMode = AUTO_MODE;
-      ESP_LOGI(TAG, "system Temp. adjust = 'AutoTemp'");
+      emptyRoomTime = current; // Reset si hay actividad
     }
-    else
+
+    bool lowPresenceTimeElapsed = (current - emptyRoomTime >= AutoTimeOut);
+    bool highPresence = (presence_rate > 0.50);
+
+    // Máquina de estados interna basada en tu FlowFlag
+    switch (autoModeFlag)
     {
+    case FLAG_UNSET:
+      // ¡CONFORT INMEDIATO AL ARRANQUE! No hay esperas
       activeSetpoint = user_setpoint;
       peersMode = COOL_MODE;
-      ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp'");
+      autoModeFlag = FLAG_UP;
+      ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp' (Initial Confort Bypass)");
+      break;
+
+    case FLAG_UP: // confort mode
+      // Evaluamos salida a ahorro por inactividad
+      if (lowPresenceTimeElapsed)
+      {
+        activeSetpoint = auto_setpoint;
+        peersMode = AUTO_MODE;
+        autoModeFlag = FLAG_DOWN;
+        ESP_LOGI(TAG, "system Temp. adjust = 'AutoTemp' (Inactivity Timeout -> Entering Grace Period)");
+
+        // CAPTURAMOS EL MOMENTO EXACTO DE ENTRADA A AHORRO
+        timeEnteredAuto = current;
+      }
+      else
+      {
+        activeSetpoint = user_setpoint;
+        peersMode = COOL_MODE;
+      }
+      break;
+
+    case FLAG_DOWN: // energy saving mode
+      bool autoTimeoutElapsed = (current - timeEnteredAuto >= AUTO_MIN_DURATION);
+      if (!autoTimeoutElapsed)
+      {
+        // Durante los 10 min de gracia, ignoramos presencia y forzamos ahorro
+        activeSetpoint = auto_setpoint;
+        peersMode = AUTO_MODE;
+        // Quitamos el log de aquí para no inundar el puerto serie en cada loop,
+        // o puedes usar un flag para imprimirlo una sola vez.
+      }
+      else
+      {
+        // Ya pasó el tiempo de gracia, ahora sí validamos si hay que volver a confort
+        if (highPresence)
+        {
+          activeSetpoint = user_setpoint;
+          peersMode = COOL_MODE;
+          autoModeFlag = FLAG_UP; // Volvemos a confort
+          ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp' (High Presence Detected post-grace)");
+        }
+        else
+        {
+          // Mantenemos ahorro por defecto
+          activeSetpoint = auto_setpoint;
+          peersMode = AUTO_MODE;
+        }
+      }
+      break;
     }
-    break;
+  }
+  break;
 
   case COOL_MODE:
     activeSetpoint = user_setpoint;
     peersMode = COOL_MODE;
+    autoModeFlag = FLAG_UP;
     ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp'");
     break;
 
   case FAN_MODE:
     activeSetpoint = user_setpoint;
     peersMode = FAN_MODE;
+    autoModeFlag = FLAG_UNSET;
     ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp'");
+    break;
+
+  case ECO_MODE:
+    activeSetpoint = auto_setpoint;
+    peersMode = AUTO_MODE;
+    autoModeFlag = FLAG_DOWN;
+    ESP_LOGI(TAG, "system Temp. adjust = 'AutoTemp'");
     break;
   }
 }
@@ -141,7 +212,7 @@ void system_sleep_controller() //[OK]
       switch (WAKE_CONDITION)
       {
       case WAKE_ON_PRESENCE:
-        if (radarState)
+        if (presence_rate > 0.30)
         {
           sleep_flag = FLAG_DOWN;
           SysState = SYSTEM_ON;
@@ -163,7 +234,7 @@ void system_sleep_controller() //[OK]
       switch (SLEEP_CONDITION)
       {
       case SLEEP_ON_ABSENCE:
-        if (!radarState)
+        if (presence_rate <= 0.30)
         {
           sleep_flag = FLAG_UP;
           SysState = SYSTEM_SLEEP;
@@ -180,6 +251,43 @@ void system_sleep_controller() //[OK]
   return;
 }
 
+void calculate_presence_rate()
+{
+  unsigned long current_millis = millis();
+  unsigned long elapsed_time = current_millis - lastSampleTime;
+  lastSampleTime = current_millis;
+
+  if (radarState)
+  {
+    presenceDuration += elapsed_time;
+  }
+
+  if (current_millis - lastPresenceRateCalculation >= PRECENSE_RATE_CALC_INTERVAL)
+  {
+    unsigned long actual_window_duration = current_millis - lastPresenceRateCalculation;
+    // Evitamos división por cero en escenarios extremos de reinicio o desbordamiento
+    if (actual_window_duration > 0)
+    {
+      // Calculate the presence rate as a float between 0.0 and 1.0
+      presence_rate = (float)presenceDuration / (float)actual_window_duration;
+    }
+    else
+    {
+      presence_rate = 0.0;
+    }
+
+    // Cap the presence rate at 1.0 (100%)
+    if (presence_rate > 1.0)
+    {
+      presence_rate = 1.0;
+    }
+
+    // Reset the presence duration and update the last calculation time
+    presenceDuration = 0;
+    lastPresenceRateCalculation = current_millis;
+  }
+}
+
 void update_IO() //[ok]
 {
   const unsigned long current_millis = millis();
@@ -188,7 +296,7 @@ void update_IO() //[ok]
 
   if (currentRadarReading != lastRadarState)
   {
-    lastRadarChange = millis();
+    lastRadarChange = current_millis;
     lastRadarState = currentRadarReading;
   }
 
@@ -198,6 +306,8 @@ void update_IO() //[ok]
     radarState = lastRadarState;
     // radarState has been updated after radarDebounceTime period. this prevents false presence/absence readings.
   }
+
+  calculate_presence_rate(); // calculate the presence rate based on the radar readings over time.
 
   // manual button
   if (!manuBtnPressed)
@@ -265,6 +375,7 @@ void console_log()
   root["mfc"] = system_alarms.monitor_ac;
   root["sstt"] = SysFaultState;
   root["frcv"] = fault_recovery_attempts;
+  root["presence_rate"] = presence_rate;
   //- output
   serializeJsonPretty(root, doc);
   ESP_LOGI(TAG, "%s", doc);
@@ -540,6 +651,11 @@ void setup()
       0);                   /* Core */
 
   //---------------------------------------- end of setup ---
+
+  // Inicialización crítica de tiempos para las métricas
+  lastSampleTime = millis();
+  lastPresenceRateCalculation = millis();
+
   ESP_LOGI(TAG, "** SETUP COMPLETED **");
 }
 

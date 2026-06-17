@@ -30,6 +30,7 @@ bool monitor_peer_online = false;
 bool fault_restart_attempt_flag = false;
 bool daySleepControl = false; // Variable de activación del modo sleep por cada día.
 bool radarState = false;
+float presence_rate = 0.0;
 
 // structs
 system_config_struct system_config;

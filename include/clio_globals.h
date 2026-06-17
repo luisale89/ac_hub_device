@@ -52,6 +52,7 @@ extern int activeSetpoint; // default setpoint
 extern bool fault_restart_attempt_flag;
 extern bool daySleepControl; // Variable de activación del modo sleep por cada día.
 extern bool radarState;
+extern float presence_rate;
 extern int system_hourmeter;
 
 // ## FUNCTIONS ##

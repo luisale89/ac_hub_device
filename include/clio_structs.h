@@ -15,7 +15,8 @@ enum SysModeEnum
 {
   AUTO_MODE,
   FAN_MODE,
-  COOL_MODE
+  COOL_MODE,
+  ECO_MODE
 };
 enum SysStateEnum
 {
