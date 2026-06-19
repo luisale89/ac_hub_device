@@ -536,7 +536,6 @@ void interface_controller(void *pvParameters)
   for (;;)
   {
     // network led animation
-    clio_temp_sensors_loop();
     network_led_animation();
     // task delay
     vTaskDelay(xDelay);
@@ -665,6 +664,7 @@ void loop()
   clio_wifi_loop();
   clio_espnow_loop();
   clio_mqtt_loop();
+  clio_temp_sensors_loop();
   time_counter_loop();
   fault_recovery_loop();
   update_IO();
@@ -677,5 +677,5 @@ void loop()
     // console_log();                 // system log variables.
   }
   // delay
-  delay(10);
+  delay(20);
 }
