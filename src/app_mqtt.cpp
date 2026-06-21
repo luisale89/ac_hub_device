@@ -351,11 +351,10 @@ esp_err_t publish_sensor_readings() //[ok]
   doc["metadata"]["hub"][3] = (int)daySleepControl;
   doc["metadata"]["hub"][4] = system_config.user_setpoint;
   doc["metadata"]["hub"][5] = activeSetpoint;
-  doc["metadata"]["hub"][6] = system_hourmeter;
+  doc["metadata"]["hub"][6] = system_minutes / 60; // system hours
   doc["metadata"]["hub"][7] = room_temperature;
   doc["metadata"]["hub"][8] = (int)system_config.room_temp_control_en; // indicar si el control por temperatura ambiente esta habilitado o no,
   doc["metadata"]["hub"][9] = presence_rate;                           // porcentaje de presencia calculado en el último minuto, valor entre 0 y 1.
-  doc["metadata"]["hub"][10] = (int)peersMode;                         // modo actual de los peers
   doc["metadata"]["ctrl"][0] = (int)controller_peer_online;
   doc["metadata"]["moni"][0] = (int)monitor_peer_online;
 

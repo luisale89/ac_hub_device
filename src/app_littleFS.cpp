@@ -22,8 +22,8 @@ char *load_data_from_fs(const char *target_file)
   File f = LittleFS.open(target_file);
   if (!f)
   {
-    ESP_LOGE(TAG, "Error al abrir el archivo solicitado.");
-    strcpy(buffer, "null");
+    ESP_LOGE(TAG, "Archivo solicitado no existe..");
+    strcpy(buffer, "");
     return buffer;
   }
 
@@ -32,7 +32,7 @@ char *load_data_from_fs(const char *target_file)
   {
     ESP_LOGE(TAG, "Archivo demasiado grande para el buffer.");
     f.close();
-    strcpy(buffer, "null");
+    strcpy(buffer, "");
     return buffer;
   }
 

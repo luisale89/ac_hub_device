@@ -23,8 +23,8 @@ char last_ntp_update[10] = "";        // HH:MM:SS
 char hub_device_serial[13] = "";      // MAC address without colons, 12 chars + null
 volatile float room_temperature = 22; // requested by both cores.
 volatile LedAnimationStyle ntw_led_style = ALLWAYS_OFF;
-int activeSetpoint = 24;  // default setpoint
-int system_hourmeter = 0; // system on hourmeter
+int activeSetpoint = 24;          // default setpoint
+unsigned long system_minutes = 0; // system on minutes;
 bool controller_peer_online = false;
 bool monitor_peer_online = false;
 bool fault_restart_attempt_flag = false;
@@ -189,23 +189,21 @@ void load_wifi_data_from_fs()
   return;
 }
 
-void load_hourmeter_from_fs()
+void load_minutes_from_fs()
 {
-  ESP_LOGI(TAG, "-> loading hourmeter from fs");
-  JsonDocument json;
-  const char *hourmeter_data = load_data_from_fs("/Hourmeter.txt");
+  ESP_LOGI(TAG, "-> loading minutes from fs");
+  const char *minutes_data = load_data_from_fs("/Minutes.txt");
 
-  DeserializationError error = deserializeJson(json, hourmeter_data);
-  if (error)
+  if (strlen(minutes_data) == 0)
   {
-    ESP_LOGE(TAG, "hourmeter Deserialization error raised with code: %s", error.c_str());
+    ESP_LOGW(TAG, "No se encontraron datos previos del horómetro. Inicializando en 0.");
+    system_minutes = 0; // Tu variable global
     return;
   }
 
-  const int hours = json["hours"] | 0;
-  const int minutes = json["minutes"] | 0;
-  system_hourmeter = hours; // update global hourmeter value in hours.
-  ESP_LOGI(TAG, "hourmeter loaded from fs: %d hours and %d minutes", hours, minutes);
+  // Convertimos el string guardado directamente a un entero
+  system_minutes = strtoul(minutes_data, NULL, 10);
+  ESP_LOGI(TAG, "Minutos cargados con éxito: %lu min.", system_minutes);
 
   return;
 }
@@ -254,7 +252,7 @@ void initialize_vars()
 void clio_fsdata_setup()
 {
   initialize_vars();
-  load_hourmeter_from_fs();
+  load_minutes_from_fs();
   load_operation_state_from_fs(); // on-off setting
   load_operation_mode_from_fs();  // function mode (cool, auto, fan)
   load_system_config_from_fs();   // system config protections and settings
