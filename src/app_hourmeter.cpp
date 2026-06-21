@@ -3,88 +3,88 @@
 static const char *TAG = "CLIO-HOURMETER";
 static unsigned long lastSecondTick = 0;
 static int systemRunningSeconds = 0;
-static const char *hourmeter_file = "/Hourmeter.txt";
-static const int UPDATE_INTERVAL_MINUTES = 15; // update the hourmeter in fs every 15 minutes.
+static const char *target_file = "/Hourmeter.txt";
+static const int UPDATE_INTERVAL_SECONDS = 900;
 
 void update_hourmeter_in_fs()
 {
-    const int minutes_to_update = systemRunningSeconds / 60;
-    if (minutes_to_update < UPDATE_INTERVAL_MINUTES)
-    {
-        // only update the hourmeter in fs if at least 15 minutes have passed since the last update.
-        return;
-    }
-    systemRunningSeconds = 0; // reset seconds counter after calculating the minutes to update.
 
-    ESP_LOGI(TAG, "updating hourmeter in fs.");
-    ESP_LOGD(TAG, "minutes to update: %d", minutes_to_update);
-    const char *target_file = "/Hourmeter.txt";
-    JsonDocument json;
-    JsonDocument new_json;
-    char new_hourmeter[512]; // buffer for new hourmeter data to save in fs.
+    ESP_LOGI(TAG, "Iniciando actualización de horómetro en FS...");
+
+    // Leer datos actuales
     const char *hourmeter_data = load_data_from_fs(target_file);
-
+    JsonDocument json;
     DeserializationError error = deserializeJson(json, hourmeter_data);
 
     if (error)
     {
-        ESP_LOGE(TAG, "hourmeter Deserialization error raised with code: %s", error.c_str());
+        ESP_LOGE(TAG, "Error de deserialización: %s. Conservando valores en memoria activa.", error.c_str());
+        // Aquí podrías intentar cargar un archivo ".bak" de respaldo si lo implementas
         return;
     }
 
-    const int prev_h = json["hours"] | 0;
-    const int prev_m = json["minutes"] | 0;
-    const int total_minutes = prev_m + minutes_to_update;
-    // calculate new hourmeter values based on previous values and the total minutes to update.
-    // If total minutes exceed 60, we will update the hours and reset the minutes.
-    int new_h = prev_h;
-    int new_m = total_minutes;
-
-    if (total_minutes >= 60)
+    if (json["hours"].isNull() || json["minutes"].isNull())
     {
-        // if total minutes exceed 60, we will update the hours and reset the minutes.
-        new_h += 1;
-        new_m = 0;
+        ESP_LOGE(TAG, "Estructura JSON corrupta o incompleta detectada. ¡Operación abortada!");
+        return;
     }
 
-    ESP_LOGI(TAG, "current hourmeter: %d hours and %d minutes", prev_h, prev_m);
-    ESP_LOGI(TAG, "new hourmeter: %d hours and %d minutes", new_h, new_m);
+    const int minutes_to_update = systemRunningSeconds / 60;
+    // 2. Reiniciar el contador de segundos de forma segura reteniendo el remanente si lo hubiera
+    systemRunningSeconds -= (minutes_to_update * 60);
 
-    // update global value.
-    system_hourmeter = new_h; // update global hourmeter value in hours.
+    const int prev_h = json["hours"];
+    const int prev_m = json["minutes"];
+    const int total_minutes = prev_m + minutes_to_update;
+
+    // 3. MATEMÁTICA EXACTA: Evita pérdida de minutos residuales
+    const int new_h = prev_h + (total_minutes / 60);
+    const int new_m = total_minutes % 60;
+
+    ESP_LOGI(TAG, "Horómetro actual: %d h y %d m. Nuevos valores: %d h y %d m", prev_h, prev_m, new_h, new_m);
+
+    // Actualizar variable global de control
+    system_hourmeter = new_h;
+
+    // 4. Salvar datos con un buffer optimizado
+    JsonDocument new_json;
+    char new_hourmeter[128]; // 512 bytes es excesivo para dos enteros, 128 es más que seguro
 
     new_json["hours"] = new_h;
     new_json["minutes"] = new_m;
+
     serializeJson(new_json, new_hourmeter, sizeof(new_hourmeter));
+
     esp_err_t err = save_data_in_fs(new_hourmeter, target_file);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Error saving hourmeter data in fs.");
+        ESP_LOGE(TAG, "Error crítico al escribir en FS.");
+        // Re-sumamos los minutos para no perderlos en la próxima vuelta
+        systemRunningSeconds += (minutes_to_update * 60);
         return;
     }
 
-    ESP_LOGI(TAG, "hourmeter updated in fs correctly.");
-    return;
+    ESP_LOGI(TAG, "Horómetro guardado exitosamente.");
 }
 
 void time_counter_loop()
 {
-    //-
     const unsigned long currentMillis = millis();
 
     if (SysState != SYSTEM_ON)
     {
-        // nothing to count when the system state is not on.
         return;
     }
 
     if (currentMillis - lastSecondTick >= 1000)
     {
-        // 1 second count
         lastSecondTick = currentMillis;
         systemRunningSeconds++;
-        update_hourmeter_in_fs();
-    }
 
-    return;
+        // Controlar la ejecución en FS desde aquí optimiza recursos de CPU y Stack
+        if (systemRunningSeconds >= UPDATE_INTERVAL_SECONDS)
+        {
+            update_hourmeter_in_fs();
+        }
+    }
 }
