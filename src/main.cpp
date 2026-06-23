@@ -49,14 +49,16 @@ void temp_setpoint_controller() // [OK]
   {
   case AUTO_MODE:
   {
+    bool lowPresence = (presence_rate <= 0.30);
+    bool highPresence = (presence_rate > 0.50);
     // Actualización constante de tiempos de presencia/ausencia
-    if (presence_rate > 0.30)
+    if (!lowPresence)
     {
       emptyRoomTime = current; // Reset si hay actividad
     }
 
     bool lowPresenceTimeElapsed = (current - emptyRoomTime >= AutoTimeOut);
-    bool highPresence = (presence_rate > 0.50);
+    peersMode = AUTO_MODE;
 
     // Máquina de estados interna basada en tu FlowFlag
     switch (autoModeFlag)
@@ -64,56 +66,47 @@ void temp_setpoint_controller() // [OK]
     case FLAG_UNSET:
       // ¡CONFORT INMEDIATO AL ARRANQUE! No hay esperas
       activeSetpoint = user_setpoint;
-      peersMode = COOL_MODE;
       autoModeFlag = FLAG_UP;
+      emptyRoomTime = current;
       ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp' (Initial Confort Bypass)");
       break;
 
-    case FLAG_UP: // confort mode
-      // Evaluamos salida a ahorro por inactividad
+    case FLAG_UP:
+      // MODO CONFORT
+      // Evaluamos salida a modo ahorro por inactividad
       if (lowPresenceTimeElapsed)
       {
         activeSetpoint = auto_setpoint;
-        peersMode = AUTO_MODE;
         autoModeFlag = FLAG_DOWN;
+        timeEnteredAuto = current; // CAPTURAMOS EL MOMENTO EXACTO DE ENTRADA A AHORRO
         ESP_LOGI(TAG, "system Temp. adjust = 'AutoTemp' (Inactivity Timeout -> Entering Grace Period)");
-
-        // CAPTURAMOS EL MOMENTO EXACTO DE ENTRADA A AHORRO
-        timeEnteredAuto = current;
       }
       else
       {
         activeSetpoint = user_setpoint;
-        peersMode = COOL_MODE;
       }
       break;
 
-    case FLAG_DOWN: // energy saving mode
+    case FLAG_DOWN:
+      // MODO AHORRO ENERGÉTICO
       bool autoTimeoutElapsed = (current - timeEnteredAuto >= AUTO_MIN_DURATION);
       if (!autoTimeoutElapsed)
       {
         // Durante los 10 min de gracia, ignoramos presencia y forzamos ahorro
         activeSetpoint = auto_setpoint;
-        peersMode = AUTO_MODE;
-        // Quitamos el log de aquí para no inundar el puerto serie en cada loop,
-        // o puedes usar un flag para imprimirlo una sola vez.
+      }
+      else if (highPresence)
+      {
+        // Ya pasó el tiempo de gracia, ahora sí validamos si hay que volver a confort
+        activeSetpoint = user_setpoint;
+        autoModeFlag = FLAG_UP;  // Volvemos a confort
+        emptyRoomTime = current; // Reseteamos el conteo de ausencia al volver a confort
+        ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp' (High Presence Detected post-grace)");
       }
       else
       {
-        // Ya pasó el tiempo de gracia, ahora sí validamos si hay que volver a confort
-        if (highPresence)
-        {
-          activeSetpoint = user_setpoint;
-          peersMode = COOL_MODE;
-          autoModeFlag = FLAG_UP; // Volvemos a confort
-          ESP_LOGI(TAG, "system Temp. adjust = 'UserTemp' (High Presence Detected post-grace)");
-        }
-        else
-        {
-          // Mantenemos ahorro por defecto
-          activeSetpoint = auto_setpoint;
-          peersMode = AUTO_MODE;
-        }
+        // Mantenemos ahorro por defecto
+        activeSetpoint = auto_setpoint;
       }
       break;
     }
