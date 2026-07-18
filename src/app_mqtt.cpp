@@ -74,15 +74,6 @@ esp_err_t clio_serialize_json(JsonDocument &doc, char *buffer, size_t buffer_siz
   return ESP_OK;
 }
 
-bool is_wifi_connected()
-{
-  if (WiFi.status() != WL_CONNECTED && WiFi.localIP() == IPAddress(0, 0, 0, 0))
-  {
-    return false;
-  }
-  return true;
-}
-
 void build_topic(char *buffer, const char *resource) // build topic with format: clio/{resource}/{device_serial}
 {
   snprintf(buffer, TOPIC_STR_SIZE, "clio/v1/%s/%s", resource, hub_device_serial);
@@ -447,11 +438,6 @@ esp_err_t connectToMQTT()
     publish_new_connection();
     ntw_led_style = PULSE; // solid led indicates wifi connection but disconnected from the mqtt broker.
     return ESP_OK;
-  };
-
-  if (!is_wifi_connected()) // check if wifi connection is completed before trying mqtt connection.
-  {
-    return ESP_FAIL;
   };
 
   // try new connection.

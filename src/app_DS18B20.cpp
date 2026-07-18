@@ -7,6 +7,8 @@
 static const char *TAG = "CLIO-DS18B20";
 static const int tempSensorResolution = 12; // bits
 static unsigned long lastTempRequest = 0;
+static const float filter_factor = 0.05; // factor de filtrado para suavizar la lectura de temperatura
+static bool first_reading = true;        // flag para indicar si es la primera lectura de temperatura
 static int tempRequestDelay = 0;
 OneWire oneWireRoomT(ROOM_TEMP_PIN);               // Setup a oneWire instance to communicate with any OneWire devices
 DallasTemperature room_temp_sensor(&oneWireRoomT); // Pass our oneWire reference to DTS
@@ -29,7 +31,17 @@ void clio_temp_sensors_loop()
         }
         else
         {
-            room_temperature = roomTempBuffer;
+            if (first_reading)
+            {
+                // if it's the first reading, just assign the value directly without filtering
+                room_temperature = roomTempBuffer;
+                first_reading = false;
+            }
+            else
+            {
+                // apply low-pass filter to smooth the temperature reading
+                room_temperature = room_temperature * (1 - filter_factor) + roomTempBuffer * filter_factor;
+            }
         }
 
         // request new temperature reading
@@ -49,5 +61,5 @@ void clio_temp_sensors_setup()
     room_temp_sensor.requestTemperatures();
     lastTempRequest = millis();
     tempRequestDelay = 750 / (1 << (12 - tempSensorResolution));
-    ESP_LOGI(TAG, "case_temp_sensor setup completed");
+    ESP_LOGI(TAG, "room_temp_sensor setup completed");
 }
