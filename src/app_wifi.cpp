@@ -8,16 +8,18 @@ static bool ap_btn_state = false;
 static bool ap_btn_handled = false;
 static bool offlineOperationActive = false;
 static bool first_ota_check_done = false;
-static int wiFiReconnectAttempt = 0;
-static const int MAX_WIFI_RECONNECT_ATT = 33;
-static const unsigned long WIFI_RECONNECT_BACKOFF = 5000UL; // 5 seconds backoff between reconnect attempts
+static volatile bool wifi_disconnected_event_fired = false;
+static int wifiReconnectAttempt = 0;
+static const int MAX_WIFI_RECONNECT_ATT = 30;
+static const unsigned long WIFI_RECONNECT_INTERVAL = 10000L; // 10 seconds between reconnect attempts
 static unsigned long lastApBtnChange = 0;
 static unsigned long lastOfflineOperation = 0;
 static unsigned long lastOtaCheck = 0;
-static const unsigned long wifiReconnectInterval = 5 * 60000UL; // 5 minutos para intentar reconectar al wifi.
-static const unsigned long BTN_DEBOUNCE_TIME = 250UL;           // 250ms rebound time constant;
-static const unsigned long AP_BTN_LONG_PRESS_TIME = 3000UL;     // 3 segundos para considerar una pulsación larga en el botón de AP.
-static const unsigned long OTA_CHECK_INTERVAL = 30 * 60000UL;   // 30 minutos entre cada verificación de OTA.
+static unsigned long lastWifiReconnect = 0;
+static const unsigned long OFFLINE_MODE_TIMEOUT = 5 * 60000UL; // 5 minutos para intentar reconectar al wifi.
+static const unsigned long BTN_DEBOUNCE_TIME = 250UL;          // 250ms rebound time constant;
+static const unsigned long AP_BTN_LONG_PRESS_TIME = 3000UL;    // 3 segundos para considerar una pulsación larga en el botón de AP.
+static const unsigned long OTA_CHECK_INTERVAL = 30 * 60000UL;  // 30 minutos entre cada verificación de OTA.
 static const int8_t VZLA_OFFSET = -4;
 static const int8_t OTA_WINDOW_START = 2; // 2 AM
 static const int8_t OTA_WINDOW_END = 4;   // 4 AM
@@ -132,8 +134,8 @@ void set_station_for_espnow_offline_mode()
   espnow_connection_state = ESPNOW_OFFLINE;
   lastOfflineOperation = millis(); // set timer for reconnect to the router
   offlineOperationActive = true;
-  ntw_led_style = BLINK_05X; // LED slow blink indicates offline mode, will attempt to reconnect to the router every wifiReconnectInterval (5 minutes).
-  ESP_LOGI(TAG, "[wifi] ESP-NOW offline mode set. Will attempt to reconnect to router every %d minutes.", wifiReconnectInterval / 60000);
+  ntw_led_style = BLINK_05X; // LED slow blink indicates offline mode, will attempt to reconnect to the router every OFFLINE_MODE_TIMEOUT (5 minutes).
+  ESP_LOGI(TAG, "[wifi] ESP-NOW offline mode set. Will attempt to reconnect to router every %d minutes.", OFFLINE_MODE_TIMEOUT / 60000);
   ESP_LOGI(TAG, "[wifi] channel: %d", WiFi.channel());
   return;
 }
@@ -159,7 +161,7 @@ void WiFiEvent(arduino_event_t *wifi_event)
   case ARDUINO_EVENT_WIFI_STA_CONNECTED:
     espnow_connection_state = ESPNOW_ONLINE;
     ntw_led_style = ALLWAYS_ON; // turn on the LED when connected to the router.
-    wiFiReconnectAttempt = 0;
+    wifiReconnectAttempt = 0;
     ESP_LOGI(TAG, "[wifi] Connected to the AP on channel: %d", WiFi.channel());
     ESP_LOGI(TAG, "RSSI: %d", WiFi.RSSI());
     ESP_LOGI(TAG, "STA MAC Address: %s", WiFi.macAddress().c_str());
@@ -168,19 +170,11 @@ void WiFiEvent(arduino_event_t *wifi_event)
 
   case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
 
-    if (wiFiReconnectAttempt >= MAX_WIFI_RECONNECT_ATT)
-    {
-      ESP_LOGI(TAG, "[wifi] reached max_reconnect_attempts.");
-      set_station_for_espnow_offline_mode();
-      break;
-    }
     ntw_led_style = BLINK;
-    wiFiReconnectAttempt++;
+    espnow_connection_state = ESPNOW_IDLE;
+    wifi_disconnected_event_fired = true;
     ESP_LOGI(TAG, "[wifi] Disconnected from WiFi Access Point");
     ESP_LOGI(TAG, "lost connection. Reason code: %d", wifi_event->event_info.wifi_sta_disconnected.reason);
-    ESP_LOGI(TAG, "Reconnect attempt # %d..", wiFiReconnectAttempt);
-    espnow_connection_state = ESPNOW_IDLE;
-    WiFi.reconnect(); // Intentar reconectar inmediatamente, luego el loop se encargará de los intentos posteriores con backoff.
     break;
 
   case ARDUINO_EVENT_WIFI_STA_AUTHMODE_CHANGE:
@@ -237,7 +231,7 @@ void WiFiEvent(arduino_event_t *wifi_event)
 void clio_wifi_loop() //[ok] - Mejorado con manejo de errores y reconexiones
 {
   const unsigned long currentMillis = millis();
-  // Solo esperar SmartConfig si el botón AP está presionado
+
   const bool current_ap_btn = digitalRead(AP_BTN) ? false : true;
   if (current_ap_btn != last_ap_btn_state)
   {
@@ -265,24 +259,54 @@ void clio_wifi_loop() //[ok] - Mejorado con manejo de errores y reconexiones
     startProvisioning();
   }
 
-  switch (WiFi.status())
+  // ----------------------------------------------------
+  // 2. WI-FI ROUTING LOGIC
+  // ----------------------------------------------------
+  if (WiFi.status() == WL_CONNECTED)
   {
-  case WL_CONNECTED:
-    // WiFi is connected to the router.
-    check_for_ota_update(); // Check for OTA updates when connected to WiFi
-    break;
+    //- check for OTA updates when connected to WiFi
+    wifiReconnectAttempt = 0;
+    check_for_ota_update();
+    return; // Exit the loop if connected to WiFi, no further action needed.
+  }
 
-  default:
-    // WiFi.status() is other than WL_CONNECTED
-    if (currentMillis - lastOfflineOperation >= wifiReconnectInterval && offlineOperationActive == true)
+  // WiFi is disconnected from the router
+  if (offlineOperationActive)
+  {
+    // Already in offline mode, check if it's time to attempt reconnection
+    if (currentMillis - lastOfflineOperation >= OFFLINE_MODE_TIMEOUT)
     {
-      // Intentar reconectar al WiFi después de un período de espera, solo si el flag de reconexión está activo.
-      ESP_LOGI(TAG, "[wifi] testing new connection to the router after working in disconnected mode");
+      ESP_LOGI(TAG, "[wifi] disabling offline mode and attempting to reconnect to the router...");
       offlineOperationActive = false;
-      wiFiReconnectAttempt = 0;
-      WiFi.reconnect();
+      wifiReconnectAttempt = 1;          // Reset reconnect attempts counter
+      lastWifiReconnect = currentMillis; // Reset the last reconnect attempt time
+      WiFi.begin(esid, epass);           // Attempt to reconnect to the router
     }
-    break;
+
+    return; // Exit the loop if in offline mode, no further action needed.
+  }
+
+  // Not in offline mode, check if we should enter offline mode or attempt to reconnect
+  if (wifiReconnectAttempt >= MAX_WIFI_RECONNECT_ATT)
+  {
+    ESP_LOGI(TAG, "[wifi] reached max_reconnect_attempts.");
+    set_station_for_espnow_offline_mode();
+    return; // Exit the loop if entering offline mode, no further action needed.
+  }
+
+  if (wifi_disconnected_event_fired)
+  {
+    // try to reconnect to the router every WIFI_RECONNECT_INTERVAL milliseconds if not connected.
+    if (currentMillis - lastWifiReconnect >= WIFI_RECONNECT_INTERVAL)
+    {
+      wifiReconnectAttempt++;
+      lastWifiReconnect = currentMillis;
+      wifi_disconnected_event_fired = false;
+      ESP_LOGI(TAG, "[wifi] Attempting to reconnect to the router...");
+      ESP_LOGI(TAG, "Reconnect attempt # %d..", wifiReconnectAttempt);
+      WiFi.reconnect(); // Attempt to reconnect to the router
+    }
+    return; // Exit the loop if waiting for reconnect interval, no further action needed.
   }
 }
 
@@ -294,5 +318,6 @@ void clio_wifi_setup()
   WiFi.setAutoReconnect(false);
   //- begin wifi.
   WiFi.begin(esid, epass);
+  lastWifiReconnect = millis();
   return;
 }

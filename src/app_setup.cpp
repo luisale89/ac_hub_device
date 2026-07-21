@@ -3,12 +3,13 @@ static const char *TAG = "CLIO-SETUP";
 
 // Variables de configuracion
 // Enum vars
-SysStateEnum SysState = UNKN;
-SysFaultEnum SysFaultState = STATUS_OK; // default status
-SysModeEnum SysMode = AUTO_MODE;
-SysModeEnum peersMode = FAN_MODE;
-FlowFlag sleep_flag = FLAG_UNSET;
-EspNowState espnow_connection_state = ESPNOW_IDLE;
+volatile SysStateEnum SysState = UNKN;
+volatile SysFaultEnum SysFaultState = STATUS_OK; // default status
+volatile SysModeEnum SysMode = AUTO_MODE;
+volatile SysModeEnum peersMode = FAN_MODE;
+volatile FlowFlag sleep_flag = FLAG_UNSET;
+volatile EspNowState espnow_connection_state = ESPNOW_IDLE;
+volatile LedAnimationStyle ntw_led_style = ALLWAYS_OFF;
 
 WiFiClientSecure mqttWiFiClient;
 PubSubClient mqtt_client(mqttWiFiClient);
@@ -17,12 +18,11 @@ RTC_DS3231 DS3231_RTC;
 // GLOBAL VARIABLES
 const char Week_days[7][12] = {"Domingo", "Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado"};
 char AP_SSID[33] = "";
-char esid[33] = "";                   // Max SSID length is 32
-char epass[65] = "";                  // Max WPA2 passphrase length is 64
-char last_ntp_update[10] = "";        // HH:MM:SS
-char hub_device_serial[13] = "";      // MAC address without colons, 12 chars + null
-volatile float room_temperature = 22; // requested by both cores.
-volatile LedAnimationStyle ntw_led_style = ALLWAYS_OFF;
+char esid[33] = "";              // Max SSID length is 32
+char epass[65] = "";             // Max WPA2 passphrase length is 64
+char last_ntp_update[10] = "";   // HH:MM:SS
+char hub_device_serial[13] = ""; // MAC address without colons, 12 chars + null
+volatile float room_temperature = 22.0;
 int activeSetpoint = 24;          // default setpoint
 unsigned long system_minutes = 0; // system on minutes;
 bool controller_peer_online = false;
@@ -31,6 +31,7 @@ bool fault_restart_attempt_flag = false;
 bool daySleepControl = false; // Variable de activación del modo sleep por cada día.
 bool radarState = false;
 float presence_rate = 0.0;
+SemaphoreHandle_t xMutex = NULL; // mutex for shared resources
 
 // structs
 system_config_struct system_config;

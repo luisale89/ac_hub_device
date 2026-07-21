@@ -535,6 +535,21 @@ void interface_controller(void *pvParameters)
   }
 }
 
+void time_counter_task(void *pvParameters)
+{
+  ESP_LOGI(TAG, "time counter task running on core: %d", xPortGetCoreID());
+
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xOnseSecond = pdMS_TO_TICKS(1000); // 1 second
+
+  for (;;)
+  {
+    time_counter_loop();
+    // delay for 1 second
+    xTaskDelayUntil(&xLastWakeTime, xOnseSecond);
+  }
+}
+
 // -- Setup
 void setup()
 {
@@ -631,16 +646,38 @@ void setup()
   }
   ESP_LOGI(TAG, "MQTT SERVICE OK");
 
+  //---------------------------------------- create mutex for shared resources
+  xMutex = xSemaphoreCreateMutex();
+
+  if (xMutex == NULL)
+  {
+    Serial.println("Critical Error: Failed to create Mutex!");
+    while (1)
+    {
+      ;
+    }
+  }
+
   // Crea la tarea del controlador de interfaz.
-  ESP_LOGI(TAG, "Creating FREERTOS task...");
+  ESP_LOGI(TAG, "Creating FREERTOS tasks...");
+
   xTaskCreatePinnedToCore(
       interface_controller, /* Function to implement the task */
-      "Task1",              /* Name of the task */
-      10000,                /* Stack size in words */
+      "interface_task",     /* Name of the task */
+      4096,                 /* Stack size in words */
       NULL,                 /* Task input parameter */
       0,                    /* Priority of the task */
       &Task1,               /* Task handle. */
       0);                   /* Core */
+
+  xTaskCreatePinnedToCore(
+      time_counter_task,   /* Function to implement the task */
+      "time_counter_task", /* Name of the task */
+      4096,                /* Stack size in words */
+      NULL,                /* Task input parameter */
+      3,                   /* Priority of the task */
+      NULL,                /* Task handle. */
+      0);                  /* Core */
 
   //---------------------------------------- end of setup ---
 
@@ -658,7 +695,6 @@ void loop()
   clio_espnow_loop();
   clio_mqtt_loop();
   clio_temp_sensors_loop();
-  time_counter_loop();
   fault_recovery_loop();
   update_IO();
 

@@ -26,10 +26,10 @@ static const char *mqtt_password = MQTT_PASSWORD;
 static const int mqtt_port = 8883;
 static bool post_mqttconn_ntf = false;
 static bool publish_cmd_update = false;
-static int last_mqttconnection_err = -1;
+static int last_mqttconnection_err = -10;
 
 // time consts
-static const unsigned long SaluteInterval = 1 * 30000UL;           // Tiempo para enviar que el dispositivo esta conectado,
+static const unsigned long SALUTE_INTERVAL = 1 * 30000UL;          // Tiempo para enviar que el dispositivo esta conectado,
 static const unsigned long block_rapid_updates_interval = 10000UL; // Tiempo mínimo entre actualizaciones consecutivas (10 segundos)
 static const unsigned long healthPublishInterval = 10UL * 60000UL; // Intervalo para publicar estado de salud del dispositivo (10 minutos)
 // Time vars
@@ -328,6 +328,11 @@ esp_err_t publish_new_incident(incident_struct *incident)
 esp_err_t publish_sensor_readings() //[ok]
 {
 
+  // read shared variables with mutex protection
+  xSemaphoreTake(xMutex, portMAX_DELAY); // Lock the mutex before accessing shared resource
+  uint32_t minutes = system_minutes;
+  xSemaphoreGive(xMutex); // Unlock the mutex after accessing shared resource
+
   // json todas las variables.
   char output[CLIO_MQTT_BUFF_SIZE];
   JsonDocument doc;
@@ -342,8 +347,8 @@ esp_err_t publish_sensor_readings() //[ok]
   doc["metadata"]["hub"][3] = (int)daySleepControl;
   doc["metadata"]["hub"][4] = system_config.user_setpoint;
   doc["metadata"]["hub"][5] = activeSetpoint;
-  doc["metadata"]["hub"][6] = system_minutes / 60; // system hours
-  doc["metadata"]["hub"][7] = room_temperature;
+  doc["metadata"]["hub"][6] = minutes / 60;                            // system hours
+  doc["metadata"]["hub"][7] = room_temperature;                        // temperatura ambiente medida por el sensor del hub.
   doc["metadata"]["hub"][8] = (int)system_config.room_temp_control_en; // indicar si el control por temperatura ambiente esta habilitado o no,
   doc["metadata"]["hub"][9] = presence_rate;                           // porcentaje de presencia calculado en el último minuto, valor entre 0 y 1.
   doc["metadata"]["ctrl"][0] = (int)controller_peer_online;
@@ -402,7 +407,7 @@ esp_err_t publish_new_connection()
     return ESP_OK;
   }
 
-  if (currentMillis - lastSaluteTime < SaluteInterval)
+  if (currentMillis - lastSaluteTime < SALUTE_INTERVAL)
   {
     return ESP_OK;
   }
@@ -426,6 +431,9 @@ esp_err_t publish_new_connection()
   }
   //-post message
   const bool msg_sent = mqtt_client.publish(lwill_topic, message, true); // retained message.
+
+  // reset variables
+  last_mqttconnection_err = -10;
   return msg_sent ? ESP_OK : ESP_FAIL;
 }
 
@@ -439,6 +447,11 @@ esp_err_t connectToMQTT()
     ntw_led_style = PULSE; // solid led indicates wifi connection but disconnected from the mqtt broker.
     return ESP_OK;
   };
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    return ESP_FAIL;
+  }
 
   // try new connection.
   const unsigned long currentMillis = millis();
@@ -482,8 +495,10 @@ esp_err_t connectToMQTT()
 
   const uint8_t lwill_qos = 0;
   const bool lwill_retain = true;
-  const bool mqtt_connected = mqtt_client.connect(client_id, mqtt_username, mqtt_password, lwill_topic, lwill_qos, lwill_retain, lwill_msg, true);
+  const bool clean_session = false;
+
   // Try mqtt connection to the broker.
+  const bool mqtt_connected = mqtt_client.connect(client_id, mqtt_username, mqtt_password, lwill_topic, lwill_qos, lwill_retain, lwill_msg, clean_session);
   if (!mqtt_connected)
   {
     ESP_LOGE(TAG, "Failed to connect to MQTT broker.");
@@ -614,7 +629,8 @@ esp_err_t clio_mqtt_setup()
 
   mqtt_client
       .setServer(mqtt_broker, mqtt_port)
-      .setCallback(mqtt_message_callback);
+      .setCallback(mqtt_message_callback)
+      .setKeepAlive(60); // set keep alive interval to 60 seconds
 
   //---------------------------------------- update mqtt topics
   ESP_LOGI(TAG, "building up the topics");

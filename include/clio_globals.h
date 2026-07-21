@@ -24,12 +24,13 @@ extern PubSubClient mqtt_client;
 extern RTC_DS3231 DS3231_RTC;
 
 // Enum vars
-extern SysStateEnum SysState;
-extern SysFaultEnum SysFaultState;
-extern SysModeEnum SysMode;
-extern SysModeEnum peersMode;
-extern FlowFlag sleep_flag;
-extern EspNowState espnow_connection_state;
+extern volatile SysStateEnum SysState;
+extern volatile SysFaultEnum SysFaultState;
+extern volatile SysModeEnum SysMode;
+extern volatile SysModeEnum peersMode;
+extern volatile FlowFlag sleep_flag;
+extern volatile EspNowState espnow_connection_state;
+extern volatile LedAnimationStyle ntw_led_style;
 
 // ** GLOBAL STRUCTS **
 extern system_config_struct system_config;
@@ -45,7 +46,6 @@ extern char epass[65];             // Max WPA2 passphrase length is 64
 extern char hub_device_serial[13]; // MAC address without colons, 12 chars + null
 extern char last_ntp_update[10];   // HH:MM:SS
 extern volatile float room_temperature;
-extern volatile LedAnimationStyle ntw_led_style;
 extern bool controller_peer_online;
 extern bool monitor_peer_online;
 extern int activeSetpoint; // default setpoint
@@ -54,6 +54,7 @@ extern bool daySleepControl; // Variable de activación del modo sleep por cada 
 extern bool radarState;
 extern float presence_rate;
 extern unsigned long system_minutes;
+extern SemaphoreHandle_t xMutex; // mutex for shared resources
 
 // ## FUNCTIONS ##
 

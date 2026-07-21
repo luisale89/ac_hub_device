@@ -7,7 +7,7 @@ static const unsigned long espnowPostingInterval = 3000UL; // 3 seconds for espn
 //-
 static esp_now_peer_info_t slaveTemplate;
 static pairing_data_struct pairing_data;
-static const int MAX_NOT_RSPND_TO_OFFLINE = 10; // 10 messages not received.
+static const int MAX_NOT_RSPND_TO_OFFLINE = 20; // 20 messages not received.
 static int monitor_not_rspnd_count = 0;
 static int controller_not_rspnd_count = 0;
 static bool postToPeers = false;
@@ -234,7 +234,7 @@ void clio_espnow_loop()
 {
     //-
     const unsigned long currentMillis = millis();
-    if (espnow_connection_state != ESPNOW_ONLINE)
+    if (espnow_connection_state == ESPNOW_IDLE)
     {
         return;
     }
